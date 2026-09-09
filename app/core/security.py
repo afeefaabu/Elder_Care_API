@@ -1,4 +1,5 @@
-﻿from datetime import datetime, timedelta, timezone
+﻿import bcrypt
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Any, Dict
 from jose import jwt, JWTError
 from fastapi import HTTPException, status, Depends
@@ -6,6 +7,20 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.config import settings
 
 security = HTTPBearer(auto_error=False)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not hashed_password:
+        return False
+    try:
+        pwd_bytes = plain_password.encode("utf-8")[:72]
+        return bcrypt.checkpw(pwd_bytes, hashed_password.encode("utf-8"))
+    except Exception:
+        return False
+
+def get_password_hash(password: str) -> str:
+    pwd_bytes = password.encode("utf-8")[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
 
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()

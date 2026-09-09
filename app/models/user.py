@@ -6,12 +6,16 @@ class User(Base):
     __tablename__ = "users"
     
     id = Column(Integer, primary_key=True, index=True)
-    phone_number = Column(String(32), unique=True, index=True, nullable=False)
+    phone_number = Column(String(32), unique=True, index=True, nullable=True)
+    email = Column(String(128), unique=True, index=True, nullable=True)
+    hashed_password = Column(String(256), nullable=True)
     full_name = Column(String(128), nullable=False)
     role = Column(String(32), nullable=False)  # CAREGIVER, ELDER, ADMIN
-    relationship_to_elder = Column(String(64), nullable=True)
-    preferred_language = Column(String(16), default="en")
+    relationship_to_elder = Column(String(64), nullable=True) # Daughter, Son, Nurse
+    preferred_language = Column(String(16), default="en")     # en, ta, hi
     fcm_token = Column(String(256), nullable=True)
+    is_phone_verified = Column(Boolean, default=False)
+    is_email_verified = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
