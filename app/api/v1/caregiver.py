@@ -86,7 +86,8 @@ async def provision_elder(
             priority=1,
             name=caregiver.full_name,
             relationship_label=caregiver.relationship_to_elder or "Family Caregiver",
-            phone_number=caregiver.phone_number
+            phone_number=caregiver.phone_number,
+            email=caregiver.email
         )
         db.add(contact)
     

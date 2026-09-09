@@ -1,4 +1,4 @@
-﻿from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from app.core.database import Base, utc_now
 
@@ -10,7 +10,8 @@ class EmergencyContact(Base):
     priority = Column(Integer, nullable=False)
     name = Column(String(128), nullable=False)
     relationship_label = Column(String(64), nullable=False)
-    phone_number = Column(String(32), nullable=False)
+    phone_number = Column(String(32), nullable=True)
+    email = Column(String(128), nullable=True)
     is_active = Column(Boolean, default=True)
     
     elder = relationship("User", back_populates="emergency_contacts")
