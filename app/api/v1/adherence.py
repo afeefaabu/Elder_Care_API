@@ -1,9 +1,8 @@
-﻿from datetime import datetime, timezone
-from typing import List, Optional
+﻿from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.database import get_db
+from app.core.database import get_db, utc_now
 from app.models.adherence import AdherenceLog
 from app.models.medication import Medication
 from app.models.user import User
@@ -14,8 +13,7 @@ router = APIRouter(prefix="/adherence", tags=["Adherence & Live Feed"])
 
 @router.post("/log", response_model=AdherenceLogResponse)
 async def log_adherence(payload: AdherenceLogCreate, db: AsyncSession = Depends(get_db)):
-    # 1. Look up existing pending log for this dose slot today or create one
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
     stmt = (
@@ -51,13 +49,11 @@ async def log_adherence(payload: AdherenceLogCreate, db: AsyncSession = Depends(
     await db.commit()
     await db.refresh(log)
     
-    # 2. Fetch medication and caregiver details for real-time live broadcast
     med_stmt = select(Medication).where(Medication.id == log.medication_id)
     med_res = await db.execute(med_stmt)
     med = med_res.scalar_one_or_none()
     
     if med:
-        # Broadcast to Caregiver's live dashboard WebSocket
         await adherence_broadcaster.broadcast_to_caregiver(
             caregiver_id=med.caregiver_id,
             event_type="PILL_ADHERENCE_UPDATE",
@@ -99,13 +95,13 @@ async def verify_by_caregiver(payload: CaregiverVerifyPillRequest, db: AsyncSess
         
     log.status = "VERIFIED_BY_CAREGIVER"
     log.notes = payload.notes
-    log.actual_time = datetime.now(timezone.utc)
+    log.actual_time = utc_now()
     await db.commit()
     return {"status": "success", "message": "Medication marked as verified taken by caregiver."}
 
 @router.get("/timeline")
 async def get_adherence_timeline(elder_id: int, db: AsyncSession = Depends(get_db)):
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     stmt = (
         select(AdherenceLog, Medication)
         .join(Medication, AdherenceLog.medication_id == Medication.id)

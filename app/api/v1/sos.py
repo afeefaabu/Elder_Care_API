@@ -1,9 +1,8 @@
-﻿from datetime import datetime, timezone
-from typing import List
+﻿from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.database import get_db
+from app.core.database import get_db, utc_now
 from app.models.sos import EmergencyContact, SOSEvent
 from app.models.user import User
 from app.schemas.sos import (
@@ -20,25 +19,23 @@ router = APIRouter(prefix="/sos", tags=["Emergency SOS Pipeline"])
 
 @router.post("/trigger", response_model=SOSTriggerResponse)
 async def trigger_emergency_sos(payload: SOSTriggerRequest, db: AsyncSession = Depends(get_db)):
-    # 1. Fetch elder info
     e_stmt = select(User).where(User.id == payload.elder_id)
     e_res = await db.execute(e_stmt)
     elder = e_res.scalar_one_or_none()
     elder_name = elder.full_name if elder else "Elder"
     
-    # 2. Log SOS Event
     maps_link = f"https://maps.google.com/?q={payload.latitude},{payload.longitude}"
     sos_event = SOSEvent(
         elder_id=payload.elder_id,
         latitude=payload.latitude,
         longitude=payload.longitude,
         trigger_type=payload.trigger_type,
-        status="ACTIVE"
+        status="ACTIVE",
+        created_at=utc_now()
     )
     db.add(sos_event)
     await db.flush()
     
-    # 3. Query Priority Contacts (Priority 1: Caregiver, Priority 2: Neighbor, Priority 3: Ambulance)
     c_stmt = (
         select(EmergencyContact)
         .where(EmergencyContact.elder_id == payload.elder_id, EmergencyContact.is_active == True)
@@ -48,8 +45,6 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest, db: AsyncSession = D
     contacts = c_res.scalars().all()
     
     recipients = []
-    
-    # Broadcast SMS & Push
     for contact in contacts:
         alert_body = (
             f"🚨 CRITICAL EMERGENCY SOS: {elder_name} has triggered an Emergency Alarm! "
@@ -60,8 +55,6 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest, db: AsyncSession = D
         await telephony_service.send_sms(to_phone=contact.phone_number, body=alert_body)
         recipients.append(f"{contact.relationship_label} ({contact.phone_number})")
         
-    # 4. Broadcast RED ALERT over WebSocket to active Caregiver dashboards
-    # Find any caregiver linked to this elder
     from app.models.pairing import ElderPairing
     p_stmt = select(ElderPairing).where(ElderPairing.elder_id == payload.elder_id)
     p_res = await db.execute(p_stmt)
@@ -106,7 +99,7 @@ async def resolve_emergency_sos(payload: SOSResolveRequest, db: AsyncSession = D
         raise HTTPException(status_code=404, detail="SOS event not found")
         
     sos.status = "RESOLVED"
-    sos.resolved_at = datetime.now(timezone.utc)
+    sos.resolved_at = utc_now()
     sos.resolved_by = payload.resolved_by
     await db.commit()
     

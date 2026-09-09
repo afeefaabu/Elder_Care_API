@@ -1,8 +1,12 @@
-﻿from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+﻿from datetime import datetime, timezone
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
 from app.core.config import settings
 
-# In SQLite, connect_args is needed for multithreaded/async execution
+def utc_now() -> datetime:
+    """Returns naive UTC datetime, fully compatible with both SQLite and PostgreSQL asyncpg."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
 
 engine = create_async_engine(

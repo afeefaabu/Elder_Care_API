@@ -1,8 +1,8 @@
 ﻿import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from sqlalchemy import select
-from app.core.database import AsyncSessionLocal
+from app.core.database import AsyncSessionLocal, utc_now
 from app.core.config import settings
 from app.models.adherence import AdherenceLog
 from app.models.medication import Medication
@@ -41,11 +41,10 @@ class MedicationEscalationWatchdog:
             await asyncio.sleep(settings.WATCHDOG_CHECK_INTERVAL_SECONDS)
 
     async def check_missed_medications(self):
-        now = datetime.now(timezone.utc)
+        now = utc_now()
         threshold_time = now - timedelta(minutes=settings.MISSED_MEDICATION_THRESHOLD_MINUTES)
         
         async with AsyncSessionLocal() as session:
-            # Query unacknowledged pending doses that exceeded the 25-minute grace period
             stmt = (
                 select(AdherenceLog, Medication, User)
                 .join(Medication, AdherenceLog.medication_id == Medication.id)
@@ -65,7 +64,6 @@ class MedicationEscalationWatchdog:
                 log.escalation_notified = True
                 log.escalation_time = now
                 
-                # Fetch caregiver to notify
                 caregiver_stmt = select(User).where(User.id == med.caregiver_id)
                 cg_res = await session.execute(caregiver_stmt)
                 caregiver = cg_res.scalar_one_or_none()
@@ -77,12 +75,10 @@ class MedicationEscalationWatchdog:
                 )
                 
                 if caregiver and caregiver.phone_number:
-                    # 1. Urgent SMS to Caregiver
                     await telephony_service.send_sms(
                         to_phone=caregiver.phone_number,
                         body=alert_text
                     )
-                    # 2. Siren Push Notification
                     await telephony_service.send_push_notification(
                         token=caregiver.fcm_token or "mock_fcm_token",
                         title=f"🚨 MISSED MEDICATION: {elder.full_name}",
@@ -90,7 +86,6 @@ class MedicationEscalationWatchdog:
                         channel_id="siren_escalation_channel",
                         data={"adherence_id": log.id, "elder_id": elder.id, "action": "CALL_ELDER"}
                     )
-                    # 3. Live WebSocket broadcast
                     await adherence_broadcaster.broadcast_to_caregiver(
                         caregiver_id=caregiver.id,
                         event_type="MISSED_PILL_ESCALATION",

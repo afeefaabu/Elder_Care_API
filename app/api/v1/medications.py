@@ -1,11 +1,10 @@
 ﻿import os
 import shutil
-from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.database import get_db
+from app.core.database import get_db, utc_now
 from app.core.security import get_current_user_payload
 from app.models.medication import Medication
 from app.models.adherence import AdherenceLog
@@ -44,8 +43,7 @@ async def add_medication(
     db.add(med)
     await db.flush()
     
-    # Automatically schedule today's pending logs so watchdog & adherence feed can track them
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     for slot in payload.alarm_times:
         try:
             hour, minute = map(int, slot.split(":"))
@@ -114,7 +112,7 @@ async def list_medications(elder_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/upload-photo")
 async def upload_pill_photo(file: UploadFile = File(...)):
-    filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}"
+    filename = f"{utc_now().strftime('%Y%m%d%H%M%S')}_{file.filename}"
     filepath = os.path.join(UPLOAD_DIR, filename)
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
