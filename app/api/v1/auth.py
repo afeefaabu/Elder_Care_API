@@ -1,4 +1,5 @@
-﻿from datetime import timedelta
+import secrets
+from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,8 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/request-otp")
 async def request_otp(payload: UnifiedOTPRequest, db: AsyncSession = Depends(get_db)):
-    otp_code = "123456" # Default test OTP for rapid verification
+    # Generate real random 6-digit OTP code (e.g., 584920)
+    otp_code = f"{secrets.randbelow(900000) + 100000}"
     expires_at = utc_now() + timedelta(minutes=10)
     
     # Check if existing OTP entry exists for this identifier
@@ -45,24 +47,28 @@ async def request_otp(payload: UnifiedOTPRequest, db: AsyncSession = Depends(get
         
     await db.commit()
     
-    # Dispatch OTP via Phone SMS or Email
+    # Dispatch Real OTP via Phone SMS or Real Email
     if payload.channel == "PHONE":
         await telephony_service.send_sms(
             to_phone=payload.identifier,
             body=f"Your Elder Care verification code is: {otp_code}. Valid for 10 minutes."
         )
     elif payload.channel == "EMAIL":
-        await email_service.send_otp_email(
+        dispatched = await email_service.send_otp_email(
             to_email=payload.identifier,
             otp_code=otp_code
         )
+        if not dispatched:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to send email to {payload.identifier}. Please check SMTP configuration."
+            )
         
     return {
         "status": "success",
         "channel": payload.channel,
         "identifier": payload.identifier,
-        "message": f"Verification code dispatched to {payload.identifier}",
-        "dev_mock_otp": otp_code
+        "message": f"Real verification code dispatched to {payload.identifier}"
     }
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -77,7 +83,7 @@ async def register_user(payload: UserRegisterRequest, db: AsyncSession = Depends
     otp_res = await db.execute(otp_stmt)
     otp_entry = otp_res.scalar_one_or_none()
     
-    if not otp_entry and payload.otp_code != "123456":
+    if not otp_entry:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired verification code. Please request a new OTP."
@@ -164,15 +170,13 @@ async def login_user(payload: UserLoginRequest, db: AsyncSession = Depends(get_d
                 detail="Incorrect password."
             )
     elif payload.login_method == "OTP":
-        if payload.otp_code != "123456":
-            # Check OTP table
-            otp_stmt = select(OTPVerification).where(
-                OTPVerification.identifier == ident,
-                OTPVerification.otp_code == payload.otp_code
-            )
-            otp_res = await db.execute(otp_stmt)
-            if not otp_res.scalar_one_or_none():
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code.")
+        otp_stmt = select(OTPVerification).where(
+            OTPVerification.identifier == ident,
+            OTPVerification.otp_code == payload.otp_code.strip()
+        )
+        otp_res = await db.execute(otp_stmt)
+        if not otp_res.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code.")
                 
     token = create_access_token({
         "sub": str(user.id),

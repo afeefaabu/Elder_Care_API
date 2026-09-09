@@ -3,6 +3,7 @@ import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from fastapi import HTTPException
 from app.core.config import settings
 
 logger = logging.getLogger("email_service")
@@ -13,10 +14,8 @@ class EmailService:
     def _send_sync(self, to_email: str, subject: str, body_html: str, body_text: str) -> bool:
         clean_pwd = settings.SMTP_PASSWORD.replace(" ", "") if settings.SMTP_PASSWORD else ""
         
-        # If credentials are not configured yet, fallback to local terminal output
         if not settings.SMTP_USER or not clean_pwd:
-            logger.warning("[EMAIL SERVICE] SMTP_USER or SMTP_PASSWORD not configured. Printing code to console.")
-            return True
+            raise ValueError("Gmail SMTP credentials are not set in .env. Please configure SMTP_USER and SMTP_PASSWORD.")
 
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
@@ -88,14 +87,15 @@ ElderCare Team
         try:
             return await asyncio.to_thread(self._send_sync, to_email, subject, body_html, body_text)
         except Exception as e:
-            logger.error(f"[EMAIL SERVICE] SMTP Error sending to {to_email}: {e}")
-            # Fallback print to terminal so development is never blocked
-            print("\n==================== [OUTBOUND EMAIL FALLBACK] ====================")
+            logger.error(f"[EMAIL SERVICE] Real SMTP delivery failed to {to_email}: {e}")
+            print("\n==================== [OUTBOUND EMAIL ERROR] ====================")
             print(f"TO: {to_email}")
             print(f"SUBJECT: {subject}")
-            print(f"OTP CODE: {otp_code}")
-            print(f"SMTP EXCEPTION: {e}")
-            print("===================================================================\n")
-            return True
+            print(f"FAILED REASON: {e}")
+            print("================================================================\n")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Email delivery failed via Gmail SMTP: {e}. Please ensure App Password is valid."
+            )
 
 email_service = EmailService()
