@@ -3,15 +3,15 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 class ElderProvisionRequest(BaseModel):
-    full_name: str = Field(..., example="Ramanathan")
+    full_name: str = Field(..., example="Senior Citizen Name")
     phone_number: Optional[str] = Field(None, example="+919876543212")
-    age: int = Field(..., example=68)
-    gender: str = Field("Male", example="Male")
-    blood_group: Optional[str] = Field("O+", example="O+")
-    chronic_conditions: str = Field("Type 2 Diabetes, High BP", example="Type 2 Diabetes, High BP")
-    allergies: str = Field("Penicillin", example="Penicillin")
-    dietary_restrictions: str = Field("Low-Sugar, Low-Salt, Vegetarian", example="Low-Sugar, Low-Salt, Vegetarian")
-    pension_ppo_number: Optional[str] = Field("PPO-TN-2024-98124", example="PPO-TN-2024-98124")
+    age: int = Field(..., example=70)
+    gender: Optional[str] = Field(None, example="Male")
+    blood_group: Optional[str] = Field(None, example="O+")
+    chronic_conditions: Optional[str] = Field(None, example="None or list conditions")
+    allergies: Optional[str] = Field(None, example="None or list allergies")
+    dietary_restrictions: Optional[str] = Field(None, example="Regular or special diet")
+    pension_ppo_number: Optional[str] = Field(None, example="PPO-XXXX-XXXXX")
     preferred_language: str = Field("en", example="en") # en, ta, hi
 
 class ElderProfileUpdateRequest(BaseModel):

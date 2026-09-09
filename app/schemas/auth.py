@@ -1,4 +1,4 @@
-﻿import re
+import re
 from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
@@ -31,13 +31,13 @@ class OTPVerify(BaseModel):
     phone_number: str = Field(..., example="+919876543210")
     otp_code: str = Field(..., example="123456")
     relationship: Optional[str] = Field(default="Daughter", example="Daughter")
-    full_name: Optional[str] = Field(default="Ananya", example="Ananya")
+    full_name: Optional[str] = Field(default=None, example="Caregiver Name")
 
 class UserRegisterRequest(BaseModel):
-    full_name: str = Field(..., min_length=2, max_length=128, example="Ananya Ramanathan")
+    full_name: str = Field(..., min_length=2, max_length=128, example="Caregiver Full Name")
     registration_type: str = Field(default="PHONE", example="PHONE") # PHONE or EMAIL
     phone_number: Optional[str] = Field(None, example="+919876543210")
-    email: Optional[str] = Field(None, example="ananya@example.com")
+    email: Optional[str] = Field(None, example="caregiver@example.com")
     otp_code: str = Field(..., min_length=6, max_length=6, example="123456")
     password: Optional[str] = Field(None, min_length=6, max_length=128)
     role: str = Field(default="CAREGIVER", example="CAREGIVER") # CAREGIVER, ELDER, ADMIN

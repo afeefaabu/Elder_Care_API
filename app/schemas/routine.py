@@ -8,7 +8,7 @@ class DailyRoutineCreate(BaseModel):
     category: str = Field(..., example="HYDRATION") # WAKEUP, HYDRATION, MEAL, MOBILITY, BEDTIME
     title: str = Field(..., example="Warm Water")
     description: Optional[str] = Field(None, example="Drink 1 glass warm water")
-    voice_prompt: Optional[str] = Field(None, example="Good morning Ramanathan, please drink one glass of warm water.")
+    voice_prompt: Optional[str] = Field(None, example="Good morning, please drink one glass of warm water.")
     target_metric: Optional[str] = Field(None, example="250 ml")
 
 class DailyRoutineUpdate(BaseModel):
