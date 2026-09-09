@@ -1,4 +1,4 @@
-﻿from typing import List
+from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     # 25-Minute Watchdog
     WATCHDOG_CHECK_INTERVAL_SECONDS: int = 15
     MISSED_MEDICATION_THRESHOLD_MINUTES: int = 25
+    
+    # Email & SMTP Dispatch (Gmail)
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_NAME: str = "ElderCare"
     
     # CORS
     CORS_ORIGINS: List[str] = ["*"]
