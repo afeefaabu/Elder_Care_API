@@ -1,16 +1,18 @@
-﻿from typing import List
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
 from app.models.sos import EmergencyContact, SOSEvent
 from app.models.user import User
 from app.schemas.sos import (
     EmergencyContactCreate,
+    EmergencyContactUpdate,
     EmergencyContactResponse,
     SOSTriggerRequest,
     SOSTriggerResponse,
-    SOSResolveRequest
+    SOSResolveRequest,
+    SOSEventResponse
 )
 from app.services.telephony_service import telephony_service
 from app.services.adherence_service import adherence_broadcaster
@@ -47,13 +49,16 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest, db: AsyncSession = D
     recipients = []
     for contact in contacts:
         alert_body = (
-            f"🚨 CRITICAL EMERGENCY SOS: {elder_name} has triggered an Emergency Alarm! "
+            f"?? CRITICAL EMERGENCY SOS: {elder_name} has triggered an Emergency Alarm! "
             f"Type: {payload.trigger_type}. "
             f"Live Location: {maps_link}. "
             f"Please respond immediately!"
         )
-        await telephony_service.send_sms(to_phone=contact.phone_number, body=alert_body)
-        recipients.append(f"{contact.relationship_label} ({contact.phone_number})")
+        if contact.phone_number:
+            await telephony_service.send_sms(to_phone=contact.phone_number, body=alert_body)
+            recipients.append(f"{contact.relationship_label} ({contact.phone_number})")
+        elif contact.email:
+            recipients.append(f"{contact.relationship_label} ({contact.email})")
         
     from app.models.pairing import ElderPairing
     p_stmt = select(ElderPairing).where(ElderPairing.elder_id == payload.elder_id)
@@ -101,6 +106,8 @@ async def resolve_emergency_sos(payload: SOSResolveRequest, db: AsyncSession = D
     sos.status = "RESOLVED"
     sos.resolved_at = utc_now()
     sos.resolved_by = payload.resolved_by
+    if payload.notes:
+        sos.broadcast_summary = f"{sos.broadcast_summary or ''} [Resolved Note: {payload.notes}]"
     await db.commit()
     
     return {"status": "success", "message": f"SOS {payload.sos_id} marked as resolved by {payload.resolved_by}."}
@@ -122,9 +129,63 @@ async def add_emergency_contact(payload: EmergencyContactCreate, db: AsyncSessio
         priority=payload.priority,
         name=payload.name,
         relationship_label=payload.relationship_label,
-        phone_number=payload.phone_number
+        phone_number=payload.phone_number,
+        email=payload.email,
+        is_active=True
     )
     db.add(contact)
     await db.commit()
     await db.refresh(contact)
     return contact
+
+@router.put("/contacts/{contact_id}", response_model=EmergencyContactResponse)
+async def update_emergency_contact(
+    contact_id: int,
+    payload: EmergencyContactUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(EmergencyContact).where(EmergencyContact.id == contact_id)
+    res = await db.execute(stmt)
+    contact = res.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Emergency contact not found")
+        
+    if payload.priority is not None:
+        contact.priority = payload.priority
+    if payload.name is not None:
+        contact.name = payload.name
+    if payload.relationship_label is not None:
+        contact.relationship_label = payload.relationship_label
+    if payload.phone_number is not None:
+        contact.phone_number = payload.phone_number
+    if payload.email is not None:
+        contact.email = payload.email
+    if payload.is_active is not None:
+        contact.is_active = payload.is_active
+        
+    await db.commit()
+    await db.refresh(contact)
+    return contact
+
+@router.delete("/contacts/{contact_id}")
+async def delete_emergency_contact(contact_id: int, db: AsyncSession = Depends(get_db)):
+    stmt = select(EmergencyContact).where(EmergencyContact.id == contact_id)
+    res = await db.execute(stmt)
+    contact = res.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Emergency contact not found")
+        
+    await db.delete(contact)
+    await db.commit()
+    return {"status": "success", "message": f"Emergency contact {contact_id} deleted successfully."}
+
+@router.get("/history", response_model=List[SOSEventResponse])
+async def list_sos_history(elder_id: int, db: AsyncSession = Depends(get_db)):
+    stmt = (
+        select(SOSEvent)
+        .where(SOSEvent.elder_id == elder_id)
+        .order_by(desc(SOSEvent.created_at))
+        .limit(20)
+    )
+    res = await db.execute(stmt)
+    return res.scalars().all()

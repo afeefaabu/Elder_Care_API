@@ -25,6 +25,7 @@ class User(Base):
     adherence_logs = relationship("AdherenceLog", back_populates="elder")
     routines = relationship("DailyRoutine", back_populates="elder")
     emergency_contacts = relationship("EmergencyContact", back_populates="elder")
+    vitals = relationship("VitalsLog", back_populates="elder", cascade="all, delete-orphan")
 
 class HealthProfile(Base):
     __tablename__ = "health_profiles"

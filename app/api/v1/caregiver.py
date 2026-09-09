@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
 from app.core.security import get_current_user_payload, require_caregiver
@@ -9,7 +9,12 @@ from app.models.pairing import ElderPairing
 from app.models.routine import DailyRoutine
 from app.models.sos import EmergencyContact
 from app.models.adherence import AdherenceLog
-from app.schemas.user import ElderProvisionRequest, ElderProvisionResponse
+from app.models.medication import Medication
+from app.schemas.user import (
+    ElderProvisionRequest,
+    ElderProvisionResponse,
+    ElderProfileUpdateRequest
+)
 from app.services.pairing_service import pairing_service
 
 router = APIRouter(prefix="/caregiver", tags=["Caregiver Operations"])
@@ -151,12 +156,109 @@ async def list_caregiver_elders(
             "phone_number": user.phone_number,
             "pairing_code": pairing.pair_code,
             "pairing_status": pairing.status,
+            "age": profile.age if profile else None,
+            "gender": profile.gender if profile else None,
+            "blood_group": profile.blood_group if profile else None,
             "chronic_conditions": profile.chronic_conditions if profile else None,
             "allergies": profile.allergies if profile else None,
             "dietary_restrictions": profile.dietary_restrictions if profile else None,
             "pension_ppo": profile.pension_ppo_number if profile else None,
         })
     return elders_data
+
+@router.get("/elders/{elder_id}")
+async def get_elder_profile(
+    elder_id: int,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db)
+):
+    caregiver_id = int(current_user.get("sub"))
+    stmt = (
+        select(User, HealthProfile, ElderPairing)
+        .join(ElderPairing, User.id == ElderPairing.elder_id)
+        .outerjoin(HealthProfile, User.id == HealthProfile.user_id)
+        .where(ElderPairing.caregiver_id == caregiver_id, User.id == elder_id)
+    )
+    res = await db.execute(stmt)
+    row = res.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Elder not found or not paired with this caregiver")
+    user, profile, pairing = row
+    return {
+        "elder_id": user.id,
+        "full_name": user.full_name,
+        "phone_number": user.phone_number,
+        "pairing_code": pairing.pair_code,
+        "pairing_status": pairing.status,
+        "age": profile.age if profile else None,
+        "gender": profile.gender if profile else None,
+        "blood_group": profile.blood_group if profile else None,
+        "chronic_conditions": profile.chronic_conditions if profile else None,
+        "allergies": profile.allergies if profile else None,
+        "dietary_restrictions": profile.dietary_restrictions if profile else None,
+        "pension_ppo": profile.pension_ppo_number if profile else None,
+    }
+
+@router.put("/elders/{elder_id}")
+async def update_elder_profile(
+    elder_id: int,
+    payload: ElderProfileUpdateRequest,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db)
+):
+    caregiver_id = int(current_user.get("sub"))
+    p_stmt = select(ElderPairing).where(ElderPairing.caregiver_id == caregiver_id, ElderPairing.elder_id == elder_id)
+    p_res = await db.execute(p_stmt)
+    if not p_res.first():
+        raise HTTPException(status_code=403, detail="Unauthorized: Elder not paired with this caregiver")
+        
+    u_stmt = select(User).where(User.id == elder_id)
+    u_res = await db.execute(u_stmt)
+    user = u_res.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Elder user not found")
+        
+    if payload.full_name is not None:
+        user.full_name = payload.full_name
+    if payload.preferred_language is not None:
+        user.preferred_language = payload.preferred_language
+
+    prof_stmt = select(HealthProfile).where(HealthProfile.user_id == elder_id)
+    prof_res = await db.execute(prof_stmt)
+    profile = prof_res.scalar_one_or_none()
+    if not profile:
+        profile = HealthProfile(user_id=elder_id)
+        db.add(profile)
+        
+    if payload.age is not None:
+        profile.age = payload.age
+    if payload.gender is not None:
+        profile.gender = payload.gender
+    if payload.blood_group is not None:
+        profile.blood_group = payload.blood_group
+    if payload.chronic_conditions is not None:
+        profile.chronic_conditions = payload.chronic_conditions
+    if payload.allergies is not None:
+        profile.allergies = payload.allergies
+    if payload.dietary_restrictions is not None:
+        profile.dietary_restrictions = payload.dietary_restrictions
+    if payload.pension_ppo_number is not None:
+        profile.pension_ppo_number = payload.pension_ppo_number
+        
+    await db.commit()
+    return {"status": "success", "message": f"Elder profile {user.full_name} updated successfully."}
+
+@router.delete("/elders/{elder_id}")
+async def unpair_elder(
+    elder_id: int,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db)
+):
+    caregiver_id = int(current_user.get("sub"))
+    del_stmt = delete(ElderPairing).where(ElderPairing.caregiver_id == caregiver_id, ElderPairing.elder_id == elder_id)
+    res = await db.execute(del_stmt)
+    await db.commit()
+    return {"status": "success", "message": f"Elder {elder_id} successfully unpaired."}
 
 @router.get("/dashboard/{elder_id}")
 async def get_guardian_dashboard(
@@ -173,15 +275,19 @@ async def get_guardian_dashboard(
     result = await db.execute(stmt)
     logs = result.scalars().all()
     
+    total = len(logs)
     taken_count = sum(1 for l in logs if l.status in ["TAKEN", "VERIFIED_BY_CAREGIVER"])
     pending_count = sum(1 for l in logs if l.status == "PENDING")
     missed_count = sum(1 for l in logs if l.status == "MISSED_UNACKNOWLEDGED")
     
+    adherence_pct = 100 if total == 0 else int(round((taken_count / total) * 100))
+    
     return {
         "elder_id": elder_id,
-        "total_scheduled_today": len(logs),
+        "total_scheduled_today": total,
         "taken": taken_count,
         "pending": pending_count,
         "missed_unacknowledged": missed_count,
+        "adherence_percentage": adherence_pct,
         "overall_status": "NORMAL" if missed_count == 0 else "ATTENTION_REQUIRED"
     }

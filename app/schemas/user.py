@@ -1,4 +1,4 @@
-﻿from typing import Optional, List
+from typing import Optional, List
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,17 @@ class ElderProvisionRequest(BaseModel):
     dietary_restrictions: str = Field("Low-Sugar, Low-Salt, Vegetarian", example="Low-Sugar, Low-Salt, Vegetarian")
     pension_ppo_number: Optional[str] = Field("PPO-TN-2024-98124", example="PPO-TN-2024-98124")
     preferred_language: str = Field("en", example="en") # en, ta, hi
+
+class ElderProfileUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    blood_group: Optional[str] = None
+    chronic_conditions: Optional[str] = None
+    allergies: Optional[str] = None
+    dietary_restrictions: Optional[str] = None
+    pension_ppo_number: Optional[str] = None
+    preferred_language: Optional[str] = None
 
 class ElderProvisionResponse(BaseModel):
     elder_id: int
@@ -43,7 +54,7 @@ class HealthProfileResponse(BaseModel):
 
 class UserResponse(BaseModel):
     id: int
-    phone_number: str
+    phone_number: Optional[str] = None
     full_name: str
     role: str
     preferred_language: str
