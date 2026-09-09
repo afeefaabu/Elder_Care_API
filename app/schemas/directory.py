@@ -5,11 +5,11 @@ from pydantic import BaseModel, Field
 class ServiceDirectoryCreate(BaseModel):
     elder_id: Optional[int] = None
     scope: str = Field(default="PERSONAL", example="PERSONAL") # PERSONAL or CITY_VERIFIED
-    category: str = Field(..., example="DOCTOR") # DOCTOR, TAXI, HOSPITAL, AMBULANCE
-    name: str = Field(..., example="Dr. R. Swaminathan (Diabetologist)")
-    phone_number: str = Field(..., example="+919840123456")
-    specialty_or_vehicle: Optional[str] = Field(None, example="Diabetologist")
-    address_or_clinic: Optional[str] = Field(None, example="Apollo Clinic, T. Nagar")
+    category: str = Field(...) # DOCTOR, TAXI, HOSPITAL, AMBULANCE
+    name: str = Field(...)
+    phone_number: str = Field(...)
+    specialty_or_vehicle: Optional[str] = Field(None)
+    address_or_clinic: Optional[str] = Field(None)
     is_favorite: bool = Field(default=True)
 
 class ServiceDirectoryUpdate(BaseModel):
@@ -40,7 +40,7 @@ class AppointmentCreate(BaseModel):
     elder_id: int
     directory_id: int
     requested_datetime: datetime
-    notes: Optional[str] = Field(None, example="Routine 3-month sugar checkup")
+    notes: Optional[str] = None
 
 class AppointmentResponse(BaseModel):
     id: int
@@ -58,9 +58,9 @@ class AppointmentResponse(BaseModel):
 class TaxiBookingRequest(BaseModel):
     elder_id: int
     taxi_directory_id: int
-    pickup_address: str = Field(..., example="Father's Home, 12 Gandhi Road")
-    destination_address: str = Field(..., example="Apollo City Hospital")
-    notes: Optional[str] = Field(None, example="Wheelchair assistance required")
+    pickup_address: str = Field(...)
+    destination_address: str = Field(...)
+    notes: Optional[str] = None
 
 class TaxiBookingResponse(BaseModel):
     status: str

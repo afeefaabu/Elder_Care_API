@@ -43,10 +43,7 @@ async def get_doctors(elder_id: int, db: AsyncSession = Depends(get_db)):
         select(ServiceDirectory)
         .where(
             ServiceDirectory.category.in_(["DOCTOR", "HOSPITAL"]),
-            or_(
-                ServiceDirectory.elder_id == elder_id,
-                ServiceDirectory.scope == "CITY_VERIFIED"
-            )
+            ServiceDirectory.elder_id == elder_id
         )
         .order_by(ServiceDirectory.is_favorite.desc(), ServiceDirectory.name)
     )
@@ -59,10 +56,7 @@ async def get_taxis(elder_id: int, db: AsyncSession = Depends(get_db)):
         select(ServiceDirectory)
         .where(
             ServiceDirectory.category.in_(["TAXI", "AMBULANCE"]),
-            or_(
-                ServiceDirectory.elder_id == elder_id,
-                ServiceDirectory.scope == "CITY_VERIFIED"
-            )
+            ServiceDirectory.elder_id == elder_id
         )
         .order_by(ServiceDirectory.is_favorite.desc(), ServiceDirectory.name)
     )
