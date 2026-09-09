@@ -1,4 +1,4 @@
-﻿import bcrypt
+import bcrypt
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Any, Dict
 from jose import jwt, JWTError
@@ -43,14 +43,34 @@ async def get_current_user_payload(credentials: Optional[HTTPAuthorizationCreden
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
+            detail="Authentication required. Please provide a valid Bearer token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     payload = decode_access_token(credentials.credentials)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            detail="Invalid or expired token. Please log in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return payload
+
+def require_roles(*allowed_roles: str):
+    """
+    Role-Based Access Control (RBAC) authorization dependency.
+    Validates that the authenticated user possesses one of the allowed roles.
+    Raises 403 FORBIDDEN if the role does not match.
+    """
+    async def role_checker(payload: Dict[str, Any] = Depends(get_current_user_payload)) -> Dict[str, Any]:
+        user_role = payload.get("role")
+        if user_role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access forbidden: Role '{user_role}' is not authorized. Allowed: {list(allowed_roles)}"
+            )
+        return payload
+    return role_checker
+
+require_caregiver = require_roles("CAREGIVER", "ADMIN")
+require_elder = require_roles("ELDER", "ADMIN")
+require_admin = require_roles("ADMIN")

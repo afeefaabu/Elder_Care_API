@@ -1,11 +1,11 @@
-﻿import os
+import os
 import shutil
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
-from app.core.security import get_current_user_payload
+from app.core.security import get_current_user_payload, require_caregiver
 from app.models.medication import Medication
 from app.models.adherence import AdherenceLog
 from app.schemas.medication import MedicationCreate, MedicationResponse
@@ -18,7 +18,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @router.post("", response_model=MedicationResponse)
 async def add_medication(
     payload: MedicationCreate,
-    current_user: dict = Depends(get_current_user_payload),
+    current_user: dict = Depends(require_caregiver),
     db: AsyncSession = Depends(get_db)
 ):
     caregiver_id = int(current_user.get("sub"))

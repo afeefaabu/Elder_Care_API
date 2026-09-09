@@ -1,9 +1,9 @@
-﻿from datetime import datetime, timezone
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
-from app.core.security import get_current_user_payload
+from app.core.security import get_current_user_payload, require_caregiver
 from app.models.user import User, HealthProfile
 from app.models.pairing import ElderPairing
 from app.models.routine import DailyRoutine
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/caregiver", tags=["Caregiver Operations"])
 @router.post("/create-elder", response_model=ElderProvisionResponse)
 async def provision_elder(
     payload: ElderProvisionRequest,
-    current_user: dict = Depends(get_current_user_payload),
+    current_user: dict = Depends(require_caregiver),
     db: AsyncSession = Depends(get_db)
 ):
     caregiver_id = int(current_user.get("sub"))
@@ -131,7 +131,7 @@ async def provision_elder(
 
 @router.get("/elders")
 async def list_caregiver_elders(
-    current_user: dict = Depends(get_current_user_payload),
+    current_user: dict = Depends(require_caregiver),
     db: AsyncSession = Depends(get_db)
 ):
     caregiver_id = int(current_user.get("sub"))
@@ -160,7 +160,7 @@ async def list_caregiver_elders(
 @router.get("/dashboard/{elder_id}")
 async def get_guardian_dashboard(
     elder_id: int,
-    current_user: dict = Depends(get_current_user_payload),
+    current_user: dict = Depends(require_caregiver),
     db: AsyncSession = Depends(get_db)
 ):
     today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
