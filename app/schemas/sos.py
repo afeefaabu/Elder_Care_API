@@ -4,11 +4,11 @@ from pydantic import BaseModel, Field
 
 class EmergencyContactCreate(BaseModel):
     elder_id: int
-    priority: int = Field(..., example=1) # 1: Family, 2: Neighbor, 3: Hospital
-    name: str = Field(..., example="Ananya (Daughter)")
-    relationship_label: str = Field(..., example="Primary Caregiver")
-    phone_number: Optional[str] = Field(None, example="+919876543210")
-    email: Optional[str] = Field(None, example="ananya@example.com")
+    priority: int = Field(..., description="1: Family, 2: Neighbor, 3: Hospital")
+    name: str = Field(...)
+    relationship_label: str = Field(...)
+    phone_number: Optional[str] = Field(None)
+    email: Optional[str] = Field(None)
 
 class EmergencyContactUpdate(BaseModel):
     priority: Optional[int] = None
