@@ -101,15 +101,15 @@ async def provision_elder(
     r_res = await db.execute(r_stmt)
     if not r_res.first():
         default_routines = [
-            ("06:30", "WAKEUP", "Wake Up & Morning Stretch", "Gentle wake up bell", "Good morning Ramanathan, time to begin your day."),
+            ("06:30", "WAKEUP", "Wake Up & Morning Stretch", "Gentle wake up bell", f"Good morning {elder_user.full_name}, time to begin your day."),
             ("07:00", "HYDRATION", "Warm Water (1 Glass)", "Drink 1 glass warm water", "Please drink a glass of warm water."),
-            ("08:00", "MEAL", "Diabetic Breakfast", "Low-sugar Oats or Idli", "Time for breakfast: Low sugar options."),
+            ("08:00", "MEAL", "Healthy Breakfast", "Nutritious breakfast", "Time for breakfast."),
             ("11:00", "HYDRATION", "Mid-Morning Water & Fruit", "Drink water and have a fresh fruit", "Drink water and take your light snack."),
-            ("13:00", "MEAL", "Low-Salt Lunch", "Nutritious vegetables & brown rice", "Lunch time: Low salt BP diet."),
+            ("13:00", "MEAL", "Healthy Lunch", "Nutritious vegetables & lunch", "Lunch time."),
             ("15:00", "HYDRATION", "Afternoon Hydration", "Drink water", "Afternoon water chime: keep yourself hydrated."),
             ("17:00", "MOBILITY", "Chair Yoga & Exercise", "15-Minute Chair Yoga Video", "Time for your 15-minute chair mobility exercise."),
-            ("19:30", "MEAL", "Light Dinner", "Soup and Roti", "Dinner time: Have a light wholesome meal."),
-            ("22:00", "BEDTIME", "Sleep Well Mode", "Bedtime soundscape & alarm ready", "Goodnight Ramanathan, sleep well. Alarms are set.")
+            ("19:30", "MEAL", "Light Dinner", "Dinner meal", "Dinner time: Have a light wholesome meal."),
+            ("22:00", "BEDTIME", "Sleep Well Mode", "Bedtime soundscape & alarm ready", f"Goodnight {elder_user.full_name}, sleep well. Alarms are set.")
         ]
         
         for time_str, cat, title, desc, voice in default_routines:
