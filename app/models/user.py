@@ -1,4 +1,4 @@
-﻿from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from app.core.database import Base, utc_now
 
@@ -26,6 +26,7 @@ class User(Base):
     routines = relationship("DailyRoutine", back_populates="elder")
     emergency_contacts = relationship("EmergencyContact", back_populates="elder")
     vitals = relationship("VitalsLog", back_populates="elder", cascade="all, delete-orphan")
+    workouts = relationship("SeniorWorkout", back_populates="elder", cascade="all, delete-orphan")
 
 class HealthProfile(Base):
     __tablename__ = "health_profiles"
