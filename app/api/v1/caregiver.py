@@ -146,10 +146,15 @@ async def list_caregiver_elders(
         .join(ElderPairing, User.id == ElderPairing.elder_id)
         .outerjoin(HealthProfile, User.id == HealthProfile.user_id)
         .where(ElderPairing.caregiver_id == caregiver_id)
+        .order_by(ElderPairing.id.desc())
     )
     result = await db.execute(stmt)
     elders_data = []
+    seen_elder_ids = set()
     for user, profile, pairing in result.all():
+        if user.id in seen_elder_ids:
+            continue
+        seen_elder_ids.add(user.id)
         elders_data.append({
             "elder_id": user.id,
             "full_name": user.full_name,
