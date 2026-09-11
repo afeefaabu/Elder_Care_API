@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, or_, desc
@@ -126,10 +127,14 @@ async def request_appointment(payload: AppointmentCreate, db: AsyncSession = Dep
     elder = e_res.scalar_one_or_none()
     elder_name = elder.full_name if elder else f"Elder #{payload.elder_id}"
 
+    req_dt = payload.requested_datetime
+    if req_dt.tzinfo is not None:
+        req_dt = req_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
     appointment = AppointmentRequest(
         elder_id=payload.elder_id,
         directory_id=payload.directory_id,
-        requested_datetime=payload.requested_datetime,
+        requested_datetime=req_dt,
         notes=payload.notes,
         status="PENDING",
         created_at=utc_now()

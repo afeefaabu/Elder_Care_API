@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from app.core.database import Base, utc_now
+from app.models.workout import SeniorWorkout
 
 class User(Base):
     __tablename__ = "users"

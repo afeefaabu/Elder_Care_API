@@ -8,6 +8,8 @@ from app.models.directory import ServiceDirectory, AppointmentRequest
 from app.models.sos import EmergencyContact, SOSEvent
 from app.models.vitals import VitalsLog
 
+from app.models.workout import SeniorWorkout
+
 __all__ = [
     "User",
     "HealthProfile",
@@ -21,4 +23,5 @@ __all__ = [
     "EmergencyContact",
     "SOSEvent",
     "VitalsLog",
+    "SeniorWorkout",
 ]
