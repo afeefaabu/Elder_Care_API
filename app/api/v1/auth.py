@@ -2,6 +2,7 @@ import secrets
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
 from app.core.security import create_access_token, get_current_user_payload, get_password_hash, verify_password
@@ -126,7 +127,17 @@ async def register_user(payload: UserRegisterRequest, db: AsyncSession = Depends
     if otp_entry:
         otp_entry.is_verified = True
         
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        error_text = str(exc.orig).lower() if exc.orig else str(exc).lower()
+        if "ix_users_phone_number" in error_text or "ix_users_email" in error_text:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this phone number or email address already exists. Please log in."
+            ) from exc
+        raise
     await db.refresh(new_user)
     
     # 4. Issue JWT
