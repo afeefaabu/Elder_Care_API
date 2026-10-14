@@ -263,28 +263,36 @@ async def complete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
         db, workout.elder_id, 'WORKOUT', 'COMPLETED', workout_id=workout.id
     )
 
-    pairing_stmt = select(ElderPairing).where(ElderPairing.elder_id == workout.elder_id)
+    # A senior can have pairing history (for example, a previous pairing that
+    # was replaced).  Never require exactly one row here: that raises
+    # MultipleResultsFound after the workout has already been saved and turns
+    # a successful completion into a 500 response for the senior.
+    pairing_stmt = select(ElderPairing).where(
+        ElderPairing.elder_id == workout.elder_id,
+        ElderPairing.status == 'ACTIVE',
+    )
     pairing_res = await db.execute(pairing_stmt)
-    pairing = pairing_res.scalar_one_or_none()
-    if pairing:
+    active_pairings = pairing_res.scalars().all()
+    if active_pairings:
         elder_stmt = select(User).where(User.id == workout.elder_id)
         elder_res = await db.execute(elder_stmt)
         elder = elder_res.scalar_one_or_none()
         elder_name = elder.full_name if elder else 'Senior Citizen'
 
-        await adherence_broadcaster.broadcast_to_caregiver(
-            caregiver_id=pairing.caregiver_id,
-            event_type='WORKOUT_COMPLETED',
-            payload={
-                'workout_id': workout.id,
-                'elder_id': workout.elder_id,
-                'title': workout.title,
-                'duration_minutes': workout.duration_minutes,
-                'completed_at': now.isoformat(),
-                'status': 'COMPLETED',
-                'message': f'?? {elder_name} completed {workout.title} ({workout.duration_minutes} mins)!'
-            }
-        )
+        for pairing in active_pairings:
+            await adherence_broadcaster.broadcast_to_caregiver(
+                caregiver_id=pairing.caregiver_id,
+                event_type='WORKOUT_COMPLETED',
+                payload={
+                    'workout_id': workout.id,
+                    'elder_id': workout.elder_id,
+                    'title': workout.title,
+                    'duration_minutes': workout.duration_minutes,
+                    'completed_at': now.isoformat(),
+                    'status': 'COMPLETED',
+                    'message': f'{elder_name} completed {workout.title} ({workout.duration_minutes} mins)!'
+                }
+            )
 
     return {
         'status': 'success',
