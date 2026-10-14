@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.routine import DailyRoutine
 from app.schemas.routine import DailyRoutineCreate, DailyRoutineUpdate, DailyRoutineResponse
+from app.services.adherence_service import adherence_broadcaster
 
 router = APIRouter(prefix="/routines", tags=["24-Hour Daily Living Routine"])
 
@@ -23,6 +24,9 @@ async def create_routine(payload: DailyRoutineCreate, db: AsyncSession = Depends
     db.add(routine)
     await db.commit()
     await db.refresh(routine)
+    await adherence_broadcaster.publish_elder_update(
+        db, routine.elder_id, "ROUTINE", "CREATED", routine_id=routine.id
+    )
     return routine
 
 @router.get("", response_model=List[DailyRoutineResponse])
@@ -73,6 +77,9 @@ async def update_routine(
         
     await db.commit()
     await db.refresh(routine)
+    await adherence_broadcaster.publish_elder_update(
+        db, routine.elder_id, "ROUTINE", "UPDATED", routine_id=routine.id
+    )
     return routine
 
 @router.post("/{routine_id}/toggle", response_model=DailyRoutineResponse)
@@ -85,6 +92,9 @@ async def toggle_routine_active(routine_id: int, db: AsyncSession = Depends(get_
     routine.is_active = not routine.is_active
     await db.commit()
     await db.refresh(routine)
+    await adherence_broadcaster.publish_elder_update(
+        db, routine.elder_id, "ROUTINE", "UPDATED", routine_id=routine.id
+    )
     return routine
 
 @router.delete("/{routine_id}")
@@ -94,6 +104,10 @@ async def delete_routine(routine_id: int, db: AsyncSession = Depends(get_db)):
     routine = res.scalar_one_or_none()
     if not routine:
         raise HTTPException(status_code=404, detail="Routine milestone not found")
+    elder_id = routine.elder_id
     await db.delete(routine)
     await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "ROUTINE", "DELETED", routine_id=routine_id
+    )
     return {"status": "success", "message": f"Routine milestone {routine_id} deleted successfully."}

@@ -9,6 +9,7 @@ from app.core.security import get_current_user_payload, require_caregiver
 from app.models.medication import Medication
 from app.models.adherence import AdherenceLog
 from app.schemas.medication import MedicationCreate, MedicationUpdate, MedicationResponse
+from app.services.adherence_service import adherence_broadcaster
 
 router = APIRouter(prefix="/medications", tags=["Medications & Alarms"])
 
@@ -83,6 +84,9 @@ async def add_medication(
         
     await db.commit()
     await db.refresh(med)
+    await adherence_broadcaster.publish_elder_update(
+        db, med.elder_id, "MEDICATION", "CREATED", medication_id=med.id
+    )
     return _to_response(med)
 
 @router.get("", response_model=List[MedicationResponse])
@@ -168,6 +172,9 @@ async def update_medication(
 
     await db.commit()
     await db.refresh(med)
+    await adherence_broadcaster.publish_elder_update(
+        db, med.elder_id, "MEDICATION", "UPDATED", medication_id=med.id
+    )
     return _to_response(med)
 
 @router.delete("/{med_id}")
@@ -182,8 +189,12 @@ async def delete_medication(
     if not med:
         raise HTTPException(status_code=404, detail="Medication not found")
         
+    elder_id = med.elder_id
     await db.delete(med)
     await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "MEDICATION", "DELETED", medication_id=med_id
+    )
     return {"status": "success", "message": f"Medication {med_id} deleted successfully."}
 
 @router.post("/upload-photo")

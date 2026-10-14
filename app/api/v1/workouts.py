@@ -136,6 +136,9 @@ async def create_workout(payload: WorkoutCreate, db: AsyncSession = Depends(get_
         db.add(new_routine)
         await db.commit()
 
+    await adherence_broadcaster.publish_elder_update(
+        db, workout.elder_id, 'WORKOUT', 'CREATED', workout_id=workout.id
+    )
     return workout
 
 @router.put('/{workout_id}', response_model=WorkoutResponse)
@@ -167,6 +170,9 @@ async def update_workout(workout_id: int, payload: WorkoutUpdate, db: AsyncSessi
 
     await db.commit()
     await db.refresh(workout)
+    await adherence_broadcaster.publish_elder_update(
+        db, workout.elder_id, 'WORKOUT', 'UPDATED', workout_id=workout.id
+    )
     return workout
 
 @router.delete('/{workout_id}')
@@ -177,8 +183,12 @@ async def delete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
     if not workout:
         raise HTTPException(status_code=404, detail='Workout not found')
 
+    elder_id = workout.elder_id
     await db.delete(workout)
     await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, 'WORKOUT', 'DELETED', workout_id=workout_id
+    )
     return {'status': 'success', 'message': f'Workout {workout_id} deleted.'}
 
 @router.post('/{workout_id}/toggle', response_model=WorkoutResponse)
@@ -192,6 +202,9 @@ async def toggle_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
     workout.is_active = not workout.is_active
     await db.commit()
     await db.refresh(workout)
+    await adherence_broadcaster.publish_elder_update(
+        db, workout.elder_id, 'WORKOUT', 'UPDATED', workout_id=workout.id
+    )
     return workout
 
 @router.post('/{workout_id}/complete')
@@ -205,6 +218,10 @@ async def complete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
     now = utc_now()
     workout.last_completed_at = now
     await db.commit()
+
+    await adherence_broadcaster.publish_elder_update(
+        db, workout.elder_id, 'WORKOUT', 'COMPLETED', workout_id=workout.id
+    )
 
     pairing_stmt = select(ElderPairing).where(ElderPairing.elder_id == workout.elder_id)
     pairing_res = await db.execute(pairing_stmt)

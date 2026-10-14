@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
 from app.models.vitals import VitalsLog
 from app.schemas.vitals import VitalsLogCreate, VitalsLogResponse, VitalsSummaryResponse
+from app.services.adherence_service import adherence_broadcaster
 
 router = APIRouter(prefix="/vitals", tags=["Health Vitals & Trends"])
 
@@ -72,6 +73,9 @@ async def log_vital(payload: VitalsLogCreate, db: AsyncSession = Depends(get_db)
     db.add(vital)
     await db.commit()
     await db.refresh(vital)
+    await adherence_broadcaster.publish_elder_update(
+        db, vital.elder_id, "VITAL", "CREATED", vital_id=vital.id
+    )
     return vital
 
 @router.get("", response_model=List[VitalsLogResponse])
@@ -129,6 +133,10 @@ async def delete_vital(vital_id: int, db: AsyncSession = Depends(get_db)):
     vital = res.scalar_one_or_none()
     if not vital:
         raise HTTPException(status_code=404, detail="Vitals record not found")
+    elder_id = vital.elder_id
     await db.delete(vital)
     await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "VITAL", "DELETED", vital_id=vital_id
+    )
     return {"status": "success", "message": f"Vital record {vital_id} deleted successfully."}

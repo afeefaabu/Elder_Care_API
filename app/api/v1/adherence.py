@@ -69,6 +69,9 @@ async def log_adherence(payload: AdherenceLogCreate, db: AsyncSession = Depends(
                 "message": f"Dose confirmed: {med.name} ({log.scheduled_slot}) marked as {log.status}."
             }
         )
+        await adherence_broadcaster.publish_elder_update(
+            db, log.elder_id, "ADHERENCE", "UPDATED", adherence_id=log.id
+        )
         
     return AdherenceLogResponse(
         id=log.id,
@@ -97,6 +100,9 @@ async def verify_by_caregiver(payload: CaregiverVerifyPillRequest, db: AsyncSess
     log.notes = payload.notes
     log.actual_time = utc_now()
     await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, log.elder_id, "ADHERENCE", "VERIFIED", adherence_id=log.id
+    )
     return {"status": "success", "message": "Medication marked as verified taken by caregiver."}
 
 @router.get("/timeline")

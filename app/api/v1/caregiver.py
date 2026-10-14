@@ -16,6 +16,7 @@ from app.schemas.user import (
     ElderProfileUpdateRequest
 )
 from app.services.pairing_service import pairing_service
+from app.services.adherence_service import adherence_broadcaster
 
 router = APIRouter(prefix="/caregiver", tags=["Caregiver Operations"])
 
@@ -251,6 +252,9 @@ async def update_elder_profile(
         profile.pension_ppo_number = payload.pension_ppo_number
         
     await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "PROFILE", "UPDATED"
+    )
     return {"status": "success", "message": f"Elder profile {user.full_name} updated successfully."}
 
 @router.delete("/elders/{elder_id}")

@@ -16,6 +16,7 @@ from app.schemas.directory import (
     TaxiBookingResponse
 )
 from app.services.telephony_service import telephony_service
+from app.services.adherence_service import adherence_broadcaster
 
 router = APIRouter(prefix="/directory", tags=["Personal & City Service Directory"])
 
@@ -36,6 +37,9 @@ async def add_personal_contact(payload: ServiceDirectoryCreate, db: AsyncSession
     db.add(entry)
     await db.commit()
     await db.refresh(entry)
+    await adherence_broadcaster.publish_elder_update(
+        db, entry.elder_id, "DIRECTORY", "CREATED", directory_id=entry.id
+    )
     return entry
 
 @router.get("/doctors", response_model=List[ServiceDirectoryResponse])
@@ -100,6 +104,9 @@ async def update_directory_entry(
         
     await db.commit()
     await db.refresh(entry)
+    await adherence_broadcaster.publish_elder_update(
+        db, entry.elder_id, "DIRECTORY", "UPDATED", directory_id=entry.id
+    )
     return entry
 
 @router.delete("/{entry_id}")
@@ -109,8 +116,12 @@ async def delete_directory_entry(entry_id: int, db: AsyncSession = Depends(get_d
     entry = res.scalar_one_or_none()
     if not entry:
         raise HTTPException(status_code=404, detail="Directory entry not found")
+    elder_id = entry.elder_id
     await db.delete(entry)
     await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "DIRECTORY", "DELETED", directory_id=entry_id
+    )
     return {"status": "success", "message": f"Directory entry {entry_id} deleted successfully."}
 
 @router.post("/request-appointment", response_model=AppointmentResponse)

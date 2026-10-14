@@ -136,6 +136,9 @@ async def add_emergency_contact(payload: EmergencyContactCreate, db: AsyncSessio
     db.add(contact)
     await db.commit()
     await db.refresh(contact)
+    await adherence_broadcaster.publish_elder_update(
+        db, contact.elder_id, "EMERGENCY_CONTACT", "CREATED", contact_id=contact.id
+    )
     return contact
 
 @router.put("/contacts/{contact_id}", response_model=EmergencyContactResponse)
@@ -165,6 +168,9 @@ async def update_emergency_contact(
         
     await db.commit()
     await db.refresh(contact)
+    await adherence_broadcaster.publish_elder_update(
+        db, contact.elder_id, "EMERGENCY_CONTACT", "UPDATED", contact_id=contact.id
+    )
     return contact
 
 @router.delete("/contacts/{contact_id}")
@@ -175,8 +181,12 @@ async def delete_emergency_contact(contact_id: int, db: AsyncSession = Depends(g
     if not contact:
         raise HTTPException(status_code=404, detail="Emergency contact not found")
         
+    elder_id = contact.elder_id
     await db.delete(contact)
     await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "EMERGENCY_CONTACT", "DELETED", contact_id=contact_id
+    )
     return {"status": "success", "message": f"Emergency contact {contact_id} deleted successfully."}
 
 @router.get("/history", response_model=List[SOSEventResponse])

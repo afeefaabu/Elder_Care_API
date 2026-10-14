@@ -200,6 +200,10 @@ async def complete_routine(elder_id: int, routine_id: int, db: AsyncSession = De
                 "message": f"Routine completed: {routine.title} at {routine.time_str}."
             }
         )
+
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "ROUTINE", "COMPLETED", routine_id=routine_id
+    )
         
     return {
         "status": "success",
