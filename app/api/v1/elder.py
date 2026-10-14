@@ -17,6 +17,7 @@ from app.models.sos import EmergencyContact, SOSEvent
 from app.schemas.user import PairDeviceRequest
 from app.schemas.routine import TodayScheduleItem
 from app.services.adherence_service import adherence_broadcaster
+from app.services.daily_medication_service import ensure_daily_medication_logs
 from app.services.telephony_service import telephony_service
 
 router = APIRouter(prefix="/elder", tags=["Elder Client Flow"])
@@ -76,6 +77,9 @@ async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depen
 async def get_today_schedule(elder_id: int, db: AsyncSession = Depends(get_db)):
     now = utc_now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Ensures each recurring medicine starts the day as a fresh pending dose.
+    await ensure_daily_medication_logs(db, elder_id)
     
     # Combine routines + medications into chronological list
     r_stmt = select(DailyRoutine).where(DailyRoutine.elder_id == elder_id, DailyRoutine.is_active == True)

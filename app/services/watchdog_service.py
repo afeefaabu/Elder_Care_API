@@ -9,6 +9,7 @@ from app.models.medication import Medication
 from app.models.user import User
 from app.services.telephony_service import telephony_service
 from app.services.adherence_service import adherence_broadcaster
+from app.services.daily_medication_service import ensure_daily_medication_logs
 
 logger = logging.getLogger("watchdog")
 
@@ -45,6 +46,9 @@ class MedicationEscalationWatchdog:
         threshold_time = now - timedelta(minutes=settings.MISSED_MEDICATION_THRESHOLD_MINUTES)
         
         async with AsyncSessionLocal() as session:
+            # Keep the new day's pending doses available even before either
+            # device opens its schedule.
+            await ensure_daily_medication_logs(session)
             stmt = (
                 select(AdherenceLog, Medication, User)
                 .join(Medication, AdherenceLog.medication_id == Medication.id)

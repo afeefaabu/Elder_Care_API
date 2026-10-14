@@ -8,6 +8,7 @@ from app.models.medication import Medication
 from app.models.user import User
 from app.schemas.adherence import AdherenceLogCreate, AdherenceLogResponse, CaregiverVerifyPillRequest
 from app.services.adherence_service import adherence_broadcaster
+from app.services.daily_medication_service import ensure_daily_medication_logs
 
 router = APIRouter(prefix="/adherence", tags=["Adherence & Live Feed"])
 
@@ -107,6 +108,7 @@ async def verify_by_caregiver(payload: CaregiverVerifyPillRequest, db: AsyncSess
 
 @router.get("/timeline")
 async def get_adherence_timeline(elder_id: int, db: AsyncSession = Depends(get_db)):
+    await ensure_daily_medication_logs(db, elder_id)
     today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     stmt = (
         select(AdherenceLog, Medication)

@@ -17,6 +17,7 @@ from app.schemas.user import (
 )
 from app.services.pairing_service import pairing_service
 from app.services.adherence_service import adherence_broadcaster
+from app.services.daily_medication_service import ensure_daily_medication_logs
 
 router = APIRouter(prefix="/caregiver", tags=["Caregiver Operations"])
 
@@ -275,6 +276,7 @@ async def get_guardian_dashboard(
     current_user: dict = Depends(require_caregiver),
     db: AsyncSession = Depends(get_db)
 ):
+    await ensure_daily_medication_logs(db, elder_id)
     today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     
     stmt = select(AdherenceLog).where(
