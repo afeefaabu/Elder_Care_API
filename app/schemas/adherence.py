@@ -27,10 +27,6 @@ class AdherenceLogResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class CaregiverVerifyPillRequest(BaseModel):
-    adherence_id: int
-    notes: Optional[str] = "Verified taken by daughter over phone call"
-
 class AdherenceTimelineItem(BaseModel):
     adherence_id: int
     medication_id: int

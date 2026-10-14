@@ -285,6 +285,14 @@ async def get_guardian_dashboard(
     )
     result = await db.execute(stmt)
     logs = result.scalars().all()
+
+    latest_by_dose = {}
+    for log in logs:
+        key = (log.medication_id, log.scheduled_slot)
+        current = latest_by_dose.get(key)
+        if current is None or log.id > current.id:
+            latest_by_dose[key] = log
+    logs = list(latest_by_dose.values())
     
     total = len(logs)
     taken_count = sum(1 for l in logs if l.status in ["TAKEN", "VERIFIED_BY_CAREGIVER"])

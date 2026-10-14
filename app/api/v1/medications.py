@@ -153,9 +153,18 @@ async def update_medication(
             AdherenceLog.scheduled_time >= today_start
         )
         await db.execute(del_stmt)
+
+        existing_slots_stmt = select(AdherenceLog.scheduled_slot).where(
+            AdherenceLog.medication_id == med.id,
+            AdherenceLog.scheduled_time >= today_start,
+        )
+        existing_slots_result = await db.execute(existing_slots_stmt)
+        existing_slots = set(existing_slots_result.scalars().all())
         
         now = utc_now()
         for slot in payload.alarm_times:
+            if slot in existing_slots:
+                continue
             try:
                 hour, minute = map(int, slot.split(":"))
                 scheduled_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -169,6 +178,7 @@ async def update_medication(
                 status="PENDING"
             )
             db.add(log)
+            existing_slots.add(slot)
 
     await db.commit()
     await db.refresh(med)

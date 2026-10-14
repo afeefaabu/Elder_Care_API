@@ -3,17 +3,27 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
+from app.core.security import require_elder
 from app.models.adherence import AdherenceLog
 from app.models.medication import Medication
-from app.models.user import User
-from app.schemas.adherence import AdherenceLogCreate, AdherenceLogResponse, CaregiverVerifyPillRequest
+from app.schemas.adherence import AdherenceLogCreate, AdherenceLogResponse
 from app.services.adherence_service import adherence_broadcaster
 from app.services.daily_medication_service import ensure_daily_medication_logs
 
 router = APIRouter(prefix="/adherence", tags=["Adherence & Live Feed"])
 
 @router.post("/log", response_model=AdherenceLogResponse)
-async def log_adherence(payload: AdherenceLogCreate, db: AsyncSession = Depends(get_db)):
+async def log_adherence(
+    payload: AdherenceLogCreate,
+    current_user: dict = Depends(require_elder),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user.get("role") != "ADMIN" and int(current_user.get("sub")) != payload.elder_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="An elder can record medication only for their own schedule.",
+        )
+
     now = utc_now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
@@ -25,9 +35,15 @@ async def log_adherence(payload: AdherenceLogCreate, db: AsyncSession = Depends(
             AdherenceLog.scheduled_slot == payload.scheduled_slot,
             AdherenceLog.scheduled_time >= today_start
         )
+        .order_by(AdherenceLog.id.desc())
     )
     result = await db.execute(stmt)
-    log = result.scalar_one_or_none()
+    matching_logs = result.scalars().all()
+    # A legacy edit can leave a missed log alongside a newer pending log for
+    # the same daily dose. Always mark the current pending dose first.
+    log = next((entry for entry in matching_logs if entry.status == "PENDING"), None)
+    if log is None and matching_logs:
+        log = matching_logs[0]
     
     if not log:
         log = AdherenceLog(
@@ -89,23 +105,6 @@ async def log_adherence(payload: AdherenceLogCreate, db: AsyncSession = Depends(
         created_at=log.created_at
     )
 
-@router.post("/verify-by-caregiver")
-async def verify_by_caregiver(payload: CaregiverVerifyPillRequest, db: AsyncSession = Depends(get_db)):
-    stmt = select(AdherenceLog).where(AdherenceLog.id == payload.adherence_id)
-    res = await db.execute(stmt)
-    log = res.scalar_one_or_none()
-    if not log:
-        raise HTTPException(status_code=404, detail="Adherence log not found")
-        
-    log.status = "VERIFIED_BY_CAREGIVER"
-    log.notes = payload.notes
-    log.actual_time = utc_now()
-    await db.commit()
-    await adherence_broadcaster.publish_elder_update(
-        db, log.elder_id, "ADHERENCE", "VERIFIED", adherence_id=log.id
-    )
-    return {"status": "success", "message": "Medication marked as verified taken by caregiver."}
-
 @router.get("/timeline")
 async def get_adherence_timeline(elder_id: int, db: AsyncSession = Depends(get_db)):
     await ensure_daily_medication_logs(db, elder_id)
@@ -118,8 +117,17 @@ async def get_adherence_timeline(elder_id: int, db: AsyncSession = Depends(get_d
     )
     result = await db.execute(stmt)
     
-    timeline = []
+    latest_by_dose = {}
     for log, med in result.all():
+        key = (log.medication_id, log.scheduled_slot)
+        current = latest_by_dose.get(key)
+        if current is None or log.id > current[0].id:
+            latest_by_dose[key] = (log, med)
+
+    timeline = []
+    for log, med in sorted(
+        latest_by_dose.values(), key=lambda entry: (entry[0].scheduled_slot, entry[0].id)
+    ):
         timeline.append({
             "adherence_id": log.id,
             "medication_id": med.id,
