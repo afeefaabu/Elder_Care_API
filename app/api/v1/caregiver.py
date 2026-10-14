@@ -92,7 +92,7 @@ async def provision_elder(
             elder_id=elder_user.id,
             priority=1,
             name=caregiver.full_name,
-            relationship_label=caregiver.relationship_to_elder or "Family Caregiver",
+            relationship_label=caregiver.relationship_to_elder or "Caregiver",
             phone_number=caregiver.phone_number,
             email=caregiver.email
         )
