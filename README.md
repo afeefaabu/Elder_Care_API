@@ -53,7 +53,7 @@ python test_e2e_flow.py
 | `GET` | `/api/v1/caregiver/elders` | List all seniors under care |
 | `GET` | `/api/v1/caregiver/dashboard/{id}` | Guardian mode adherence counts & vitals |
 | `POST` | `/api/v1/elder/pair-device` | 15-second pairing with 6-digit code |
-| `GET` | `/api/v1/elder/{id}/today-schedule`| Full 24-hour chronological daily routine + meds |
+| `GET` | `/api/v1/elder/{id}/today-schedule`| Full 24-hour Activity daily routine + meds |
 | `POST` | `/api/v1/medications` | Add medicine with alarm times & escalation rules |
 | `POST` | `/api/v1/adherence/log` | Elder taps "I TOOK IT" $\rightarrow$ triggers live WebSocket |
 | `GET` | `/api/v1/adherence/timeline` | Adherence logs & timeline for caregiver |

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
 from app.models.workout import SeniorWorkout
 from app.models.routine import DailyRoutine
+from app.models.vitals import VitalsLog
 from app.models.pairing import ElderPairing
 from app.models.user import User
 from app.schemas.workout import (
@@ -217,6 +218,45 @@ async def complete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
 
     now = utc_now()
     workout.last_completed_at = now
+
+    # The daily schedule renders exercise as a routine, while the exercise tab
+    # renders it as a workout. Record the matching routine completion too so
+    # both views describe the same completed activity.
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    routine_stmt = (
+        select(DailyRoutine)
+        .where(
+            DailyRoutine.elder_id == workout.elder_id,
+            DailyRoutine.time_str == workout.scheduled_time,
+            DailyRoutine.category.in_(['MOBILITY', 'EXERCISE']),
+            DailyRoutine.is_active == True,
+        )
+        .order_by(DailyRoutine.id.desc())
+    )
+    routine_res = await db.execute(routine_stmt)
+    routine = routine_res.scalars().first()
+
+    if routine:
+        completed_routine_stmt = select(VitalsLog).where(
+            VitalsLog.elder_id == workout.elder_id,
+            VitalsLog.vital_type == 'ROUTINE',
+            VitalsLog.value_primary == float(routine.id),
+            VitalsLog.measured_at >= today_start,
+        )
+        completed_routine_res = await db.execute(completed_routine_stmt)
+        if not completed_routine_res.scalar_one_or_none():
+            db.add(VitalsLog(
+                elder_id=workout.elder_id,
+                vital_type='ROUTINE',
+                value_primary=float(routine.id),
+                context_label=routine.time_str,
+                unit='milestone',
+                classification='COMPLETED',
+                notes=f'Completed workout: {workout.title}',
+                measured_at=now,
+                created_at=now,
+            ))
+
     await db.commit()
 
     await adherence_broadcaster.publish_elder_update(
