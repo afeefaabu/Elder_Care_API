@@ -10,6 +10,12 @@ class AdherenceLogCreate(BaseModel):
     photo_verification_url: Optional[str] = None
     notes: Optional[str] = None
 
+
+class AdherenceUndoRequest(BaseModel):
+    elder_id: int
+    medication_id: int
+    scheduled_slot: str = Field(..., example="08:30")
+
 class AdherenceLogResponse(BaseModel):
     id: int
     elder_id: int

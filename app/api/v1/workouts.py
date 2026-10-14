@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, s
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
+from app.core.security import require_elder
 from app.models.workout import SeniorWorkout
 from app.models.routine import DailyRoutine
 from app.models.vitals import VitalsLog
@@ -298,5 +299,63 @@ async def complete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
         'status': 'success',
         'message': f'Great job! {workout.title} marked as completed.',
         'last_completed_at': now.isoformat()
+    }
+
+
+@router.post('/{workout_id}/undo')
+async def undo_workout_completion(
+    workout_id: int,
+    current_user: dict = Depends(require_elder),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a workout to today's pending list after an accidental completion."""
+    stmt = select(SeniorWorkout).where(SeniorWorkout.id == workout_id)
+    res = await db.execute(stmt)
+    workout = res.scalar_one_or_none()
+    if not workout:
+        raise HTTPException(status_code=404, detail='Workout not found')
+    if current_user.get('role') != 'ADMIN' and int(current_user.get('sub')) != workout.elder_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='An elder can change only their own workout schedule.',
+        )
+
+    now = utc_now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    workout.last_completed_at = None
+
+    # A completed workout also creates a same-day routine completion so the
+    # schedule and workout lists stay in sync. Remove that paired record too.
+    routine_stmt = (
+        select(DailyRoutine)
+        .where(
+            DailyRoutine.elder_id == workout.elder_id,
+            DailyRoutine.time_str == workout.scheduled_time,
+            DailyRoutine.category.in_(['MOBILITY', 'EXERCISE']),
+            DailyRoutine.is_active == True,
+        )
+        .order_by(DailyRoutine.id.desc())
+    )
+    routine_res = await db.execute(routine_stmt)
+    routine = routine_res.scalars().first()
+    if routine:
+        completion_stmt = select(VitalsLog).where(
+            VitalsLog.elder_id == workout.elder_id,
+            VitalsLog.vital_type == 'ROUTINE',
+            VitalsLog.value_primary == float(routine.id),
+            VitalsLog.measured_at >= today_start,
+        )
+        completion_res = await db.execute(completion_stmt)
+        for completion_log in completion_res.scalars().all():
+            await db.delete(completion_log)
+
+    await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, workout.elder_id, 'WORKOUT', 'REVERTED', workout_id=workout.id
+    )
+    return {
+        'status': 'success',
+        'workout_id': workout.id,
+        'message': f'{workout.title} is marked as not done.',
     }
 

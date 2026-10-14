@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
-from app.core.security import create_access_token
+from app.core.security import create_access_token, require_elder
 from app.models.user import User, HealthProfile
 from app.models.pairing import ElderPairing
 from app.models.routine import DailyRoutine
@@ -214,6 +214,56 @@ async def complete_routine(elder_id: int, routine_id: int, db: AsyncSession = De
         "routine_id": routine_id,
         "title": routine.title,
         "message": f"Routine '{routine.title}' confirmed completed!"
+    }
+
+
+@router.post("/{elder_id}/routine/{routine_id}/undo")
+async def undo_routine_completion(
+    elder_id: int,
+    routine_id: int,
+    current_user: dict = Depends(require_elder),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove today's routine-completion record after an accidental tap."""
+    if current_user.get("role") != "ADMIN" and int(current_user.get("sub")) != elder_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="An elder can change only their own routine schedule.",
+        )
+
+    r_stmt = select(DailyRoutine).where(
+        DailyRoutine.id == routine_id,
+        DailyRoutine.elder_id == elder_id,
+    )
+    r_res = await db.execute(r_stmt)
+    routine = r_res.scalar_one_or_none()
+    if not routine:
+        raise HTTPException(status_code=404, detail="Routine item not found")
+
+    today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    completed_stmt = select(VitalsLog).where(
+        VitalsLog.elder_id == elder_id,
+        VitalsLog.vital_type == "ROUTINE",
+        VitalsLog.value_primary == float(routine_id),
+        VitalsLog.measured_at >= today_start,
+    )
+    completed_res = await db.execute(completed_stmt)
+    completion_logs = completed_res.scalars().all()
+    if not completion_logs:
+        raise HTTPException(status_code=404, detail="No completed routine was found for today.")
+
+    for completion_log in completion_logs:
+        await db.delete(completion_log)
+    await db.commit()
+
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "ROUTINE", "REVERTED", routine_id=routine_id
+    )
+    return {
+        "status": "success",
+        "routine_id": routine_id,
+        "title": routine.title,
+        "message": f"Routine '{routine.title}' is marked as not done.",
     }
 
 @router.post("/{elder_id}/voice-command")
