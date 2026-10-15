@@ -53,6 +53,12 @@ def _local_intent(query: str, language: str = "en") -> dict[str, str]:
     malayalam_emergency = ("അടിയന്തര", "സഹായം", "വീണ", "നെഞ്ച്", "ശ്വാസ")
     malayalam_medicine = ("മരുന്ന്", "ഗുളിക", "ടാബ്ലറ്റ്")
     malayalam_next = ("അടുത്ത", "അടുത്തത്")
+    if any(word in text for word in ("hello", "hi", "how are you", "good morning", "good evening", "ഹലോ", "സുഖമാണോ")):
+        return {
+            "intent": "GENERAL",
+            "reply": _local_greeting(is_malayalam),
+            "target_name": "",
+        }
     if any(word in text for word in ("emergency", "sos", "fell", "chest pain", "cannot breathe")):
         return {"intent": "EMERGENCY", "reply": reply("emergency", "Please use the red SOS button now. If this is an emergency, call local emergency services."), "target_name": ""}
     if any(word in text for word in malayalam_emergency):
@@ -82,6 +88,12 @@ def _local_intent(query: str, language: str = "en") -> dict[str, str]:
     }
 
 
+def _local_greeting(is_malayalam: bool) -> str:
+    if is_malayalam:
+        return "നമസ്കാരം! ഞാൻ നിങ്ങളെ സഹായിക്കാൻ തയ്യാറാണ്. ഇന്ന് എന്താണ് സഹായം വേണ്ടത്?"
+    return "Hello! I am here to help. What would you like to do today?"
+
+
 class GeminiVoiceService:
     """Uses Gemini only for intent recognition, never for authorizing actions."""
 
@@ -91,7 +103,7 @@ class GeminiVoiceService:
         if not settings.GEMINI_API_KEY:
             return _local_intent(query, language)
 
-        prompt = """You are a voice assistant for an older adult using ElderCare.
+        prompt = """You are a warm, capable voice assistant for an older adult using ElderCare.
 Return JSON only, with these keys: intent, target_name, reply.
 
 Allowed intents: PENSION_STATUS, NEXT_ACTIVITY, NEXT_WORKOUT, NEXT_MEDICINE, LOG_WATER, TAKE_MEDICINE,
@@ -99,6 +111,8 @@ COMPLETE_ROUTINE, BOOK_TAXI, CALL_DOCTOR, EMERGENCY, GENERAL.
 
 Rules:
 - You understand the user's request but you do not diagnose, prescribe, or change medication.
+- Answer friendly greetings and ordinary general-knowledge questions naturally and briefly.
+- For a question about this application, explain only the supplied project features and care plan. If a feature is not supplied, say what the app can do instead of inventing it.
 - For symptoms, danger, falls, chest pain, breathing problems, or emergencies, use EMERGENCY and tell the user to use SOS or local emergency help.
 - For an action, use the closest allowed intent. target_name must be a name from the supplied care plan, or an empty string.
 - Keep reply short, gentle, and easy to understand. Do not claim an action was completed.
@@ -125,15 +139,32 @@ Care plan summary (do not repeat private details):
             async with httpx.AsyncClient(timeout=12.0) as client:
                 response = await client.post(
                     endpoint,
-                    params={"key": settings.GEMINI_API_KEY},
+                    headers={"x-goog-api-key": settings.GEMINI_API_KEY},
                     json=body,
                 )
             response.raise_for_status()
             payload = response.json()
             text = payload["candidates"][0]["content"]["parts"][0]["text"]
             result = json.loads(text)
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
-            logger.warning("Gemini voice request failed (%s); using local care-plan fallback.", type(error).__name__)
+        except httpx.HTTPStatusError as error:
+            logger.warning(
+                "Gemini voice request was rejected (HTTP %s): %s",
+                error.response.status_code,
+                error.response.text[:300],
+            )
+            return _local_intent(query, language)
+        except httpx.RequestError as error:
+            logger.warning(
+                "Gemini voice request could not connect (%s): %s",
+                type(error).__name__,
+                str(error),
+            )
+            return _local_intent(query, language)
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            logger.warning(
+                "Gemini voice response could not be read (%s); using local care-plan fallback.",
+                type(error).__name__,
+            )
             return _local_intent(query, language)
 
         intent = str(result.get("intent", "GENERAL")).upper()
