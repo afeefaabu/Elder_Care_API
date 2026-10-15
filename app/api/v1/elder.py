@@ -20,6 +20,7 @@ from app.schemas.routine import TodayScheduleItem
 from app.services.adherence_service import adherence_broadcaster
 from app.services.daily_medication_service import ensure_daily_medication_logs
 from app.services.gemini_voice_service import gemini_voice_service
+from app.services.project_knowledge_service import project_knowledge_service
 
 router = APIRouter(prefix="/elder", tags=["Elder Client Flow"])
 
@@ -428,6 +429,7 @@ async def handle_voice_command(
             {"type": item.vital_type, "value": item.value_primary, "secondary": item.value_secondary, "unit": item.unit, "classification": item.classification}
             for item in latest_vitals
         ],
+        "project_knowledge": project_knowledge_service.context_for(payload.query.strip()),
     }
     result = await gemini_voice_service.understand(payload.query.strip(), context, language)
     intent = result["intent"]
