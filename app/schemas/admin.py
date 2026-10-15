@@ -10,17 +10,6 @@ def _normalise_email(value: str) -> str:
     return email
 
 
-class AdminBootstrapRequest(BaseModel):
-    full_name: str = Field(..., min_length=2, max_length=128)
-    email: str
-    password: str = Field(..., min_length=8, max_length=128)
-
-    @field_validator("email")
-    @classmethod
-    def validate_email(cls, value: str) -> str:
-        return _normalise_email(value)
-
-
 class AdminUserCreate(BaseModel):
     full_name: str = Field(..., min_length=2, max_length=128)
     email: Optional[str] = None

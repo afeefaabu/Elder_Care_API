@@ -1,7 +1,7 @@
 import secrets
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select, or_
+from sqlalchemy import select, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
@@ -15,61 +15,11 @@ from app.schemas.auth import (
     UserLoginRequest,
     TokenResponse
 )
-from app.schemas.admin import AdminBootstrapRequest
 from app.services.telephony_service import telephony_service
 from app.services.email_service import email_service
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-
-@router.get("/admin-setup-status")
-async def admin_setup_status(db: AsyncSession = Depends(get_db)):
-    admin_count = int((await db.scalar(select(func.count(User.id)).where(User.role == "ADMIN"))) or 0)
-    return {"setup_available": admin_count == 0}
-
-
-@router.post("/bootstrap-admin", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def bootstrap_first_admin(
-    payload: AdminBootstrapRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Create the first administrator only when the system has none."""
-    admin_count = int((await db.scalar(select(func.count(User.id)).where(User.role == "ADMIN"))) or 0)
-    if admin_count:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="An administrator already exists. Sign in with that administrator account.",
-        )
-    existing_user = await db.scalar(select(User).where(User.email == payload.email))
-    if existing_user:
-        raise HTTPException(status_code=409, detail="An account already uses this email address.")
-
-    admin = User(
-        full_name=payload.full_name.strip(),
-        email=payload.email,
-        hashed_password=get_password_hash(payload.password),
-        role="ADMIN",
-        relationship_to_elder="System Administrator",
-        is_email_verified=False,
-        is_active=True,
-    )
-    db.add(admin)
-    await db.commit()
-    await db.refresh(admin)
-    token = create_access_token({
-        "sub": str(admin.id),
-        "role": admin.role,
-        "email": admin.email,
-        "name": admin.full_name,
-    })
-    return TokenResponse(
-        access_token=token,
-        user_id=admin.id,
-        role=admin.role,
-        full_name=admin.full_name,
-        email=admin.email,
-        relationship_to_elder=admin.relationship_to_elder,
-    )
 
 @router.post("/request-otp")
 async def request_otp(payload: UnifiedOTPRequest, db: AsyncSession = Depends(get_db)):

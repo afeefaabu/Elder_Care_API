@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.core.database import init_db
 from app.api.v1.router import api_router
+from app.services.admin_seed_service import seed_default_admin
 from app.services.watchdog_service import watchdog_engine
 
 logging.basicConfig(
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI):
     # Startup:
     logger.info("Starting Elder Care Backend...")
     await init_db()
+    await seed_default_admin()
     await watchdog_engine.start()
     yield
     # Shutdown:

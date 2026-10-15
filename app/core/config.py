@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "temporary-secret-key-for-elder-care-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 43200  # 30 Days
+
+    # First administrator provisioning. These values are read only by the
+    # backend at startup; the Flutter client can never create an administrator.
+    DEFAULT_ADMIN_NAME: str = ""
+    DEFAULT_ADMIN_EMAIL: str = ""
+    DEFAULT_ADMIN_PASSWORD: str = ""
     
     # Mocking & Telephony
     MOCK_EXTERNAL_SERVICES: bool = True
