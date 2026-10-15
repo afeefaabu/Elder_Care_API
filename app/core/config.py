@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # 25-Minute Watchdog
     WATCHDOG_CHECK_INTERVAL_SECONDS: int = 15
     MISSED_MEDICATION_THRESHOLD_MINUTES: int = 25
+
+    # Gemini is called only from the backend. Leave the key blank until it is
+    # added privately to .env; never expose it to the Flutter application.
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash"
     
     # Email & SMTP Dispatch (Gmail)
     SMTP_HOST: str = "smtp.gmail.com"

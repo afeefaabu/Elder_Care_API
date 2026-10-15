@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
@@ -18,12 +18,18 @@ from app.schemas.user import PairDeviceRequest
 from app.schemas.routine import TodayScheduleItem
 from app.services.adherence_service import adherence_broadcaster
 from app.services.daily_medication_service import ensure_daily_medication_logs
-from app.services.telephony_service import telephony_service
+from app.services.gemini_voice_service import gemini_voice_service
 
 router = APIRouter(prefix="/elder", tags=["Elder Client Flow"])
 
 class VoiceCommandRequest(BaseModel):
-    query: str
+    query: str = Field(min_length=1, max_length=400)
+
+
+class VoiceCommandConfirmRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=40)
+    target_id: Optional[int] = None
+    scheduled_slot: Optional[str] = Field(default=None, max_length=20)
 
 @router.post("/pair-device")
 async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depends(get_db)):
@@ -266,207 +272,187 @@ async def undo_routine_completion(
         "message": f"Routine '{routine.title}' is marked as not done.",
     }
 
-@router.post("/{elder_id}/voice-command")
-async def handle_voice_command(elder_id: int, payload: VoiceCommandRequest, db: AsyncSession = Depends(get_db)):
-    q = payload.query.lower().strip()
-    now = utc_now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    # Fetch elder
-    e_stmt = select(User).where(User.id == elder_id)
-    e_res = await db.execute(e_stmt)
-    elder = e_res.scalar_one_or_none()
-    elder_name = elder.full_name if elder else "Senior Citizen"
-    
-    # 1. Pension query
-    if "pension" in q:
-        month_name = now.strftime("%B %Y")
-        return {
-            "status": "success",
-            "action": "PENSION_CHECK",
-            "spoken_response": f"Your pension of ₹3,500 for {month_name} has been credited successfully to your State Bank of India account.",
-            "data": {
-                "amount": "₹3,500",
-                "bank": "State Bank of India (SBI)",
-                "status": "CREDITED",
-                "scheme": "Senior Social Security DBT Pension"
-            }
-        }
-        
-    # 2. Taxi booking query
-    if "taxi" in q or "cab" in q or "driver" in q:
-        t_stmt = select(ServiceDirectory).where(
-            ServiceDirectory.elder_id == elder_id,
-            ServiceDirectory.category == "TAXI",
-            ServiceDirectory.is_active == True
-        )
-        t_res = await db.execute(t_stmt)
-        taxi = t_res.scalars().first()
-        driver_name = taxi.name if taxi else "Driver Ramesh"
-        phone = taxi.phone_number if taxi else "+91 98765 43211"
-        vehicle = taxi.specialty_or_vehicle if taxi else "White Swift (KA-01-AB-1234)"
-        
-        # Send SMS dispatch
-        await telephony_service.send_sms(
-            to_phone=phone,
-            body=f"AUTO DISPATCH: Senior citizen {elder_name} requested pickup at Home (142 Anna Salai). Destination: Apollo Clinic."
-        )
-        
-        return {
-            "status": "success",
-            "action": "TAXI_DISPATCHED",
-            "spoken_response": f"Taxi cab booked successfully. {driver_name} in {vehicle} has been dispatched to your home.",
-            "data": {
-                "driver_name": driver_name,
-                "phone": phone,
-                "vehicle": vehicle,
-                "pickup": "142 Anna Salai, Chennai (Elder Home)"
-            }
-        }
+def _assert_elder_voice_access(elder_id: int, current_user: dict) -> None:
+    if current_user.get("role") != "ADMIN" and int(current_user.get("sub")) != elder_id:
+        raise HTTPException(status_code=403, detail="You can use voice help only for your own care plan.")
 
-    # 3. Doctor query
-    if "doctor" in q or "appointment" in q or "clinic" in q:
-        d_stmt = select(ServiceDirectory).where(
-            ServiceDirectory.elder_id == elder_id,
-            ServiceDirectory.category == "DOCTOR",
-            ServiceDirectory.is_active == True
-        )
-        d_res = await db.execute(d_stmt)
-        doc = d_res.scalars().first()
-        doc_name = doc.name if doc else "Dr. Rajesh"
-        phone = doc.phone_number if doc else "+91 99464 16015"
-        
-        # SMS booking request
-        await telephony_service.send_sms(
-            to_phone=phone,
-            body=f"CLINIC APPT REQUEST: Senior citizen {elder_name} requested consultation for tomorrow at 10:00 AM."
-        )
-        
-        return {
-            "status": "success",
-            "action": "DOCTOR_REQUESTED",
-            "spoken_response": f"Consultation requested with {doc_name} for tomorrow 10:00 AM. His clinic desk has been notified.",
-            "data": {
-                "doctor_name": doc_name,
-                "phone": phone,
-                "time": "Tomorrow 10:00 AM"
-            }
-        }
 
-    # 4. Water / Hydration
-    if "water" in q or "drink" in q or "glass" in q:
-        v_log = VitalsLog(
-            elder_id=elder_id,
-            vital_type="WATER",
-            value_primary=1.0,
-            context_label="HYDRATION",
-            unit="glasses",
-            classification="NORMAL",
-            notes="Logged 1 glass of water via Voice Assistant",
-            measured_at=now,
-            created_at=now
-        )
-        db.add(v_log)
-        await db.commit()
-        return {
-            "status": "success",
-            "action": "WATER_LOGGED",
-            "spoken_response": "1 glass of fresh water recorded! Staying hydrated keeps your blood pressure balanced.",
-            "data": {"glasses_added": 1}
-        }
+async def _active_voice_data(db: AsyncSession, elder_id: int):
+    medications = (await db.execute(select(Medication).where(
+        Medication.elder_id == elder_id, Medication.is_active == True
+    ))).scalars().all()
+    routines = (await db.execute(select(DailyRoutine).where(
+        DailyRoutine.elder_id == elder_id, DailyRoutine.is_active == True
+    ))).scalars().all()
+    directory = (await db.execute(select(ServiceDirectory).where(
+        ServiceDirectory.elder_id == elder_id, ServiceDirectory.is_active == True
+    ))).scalars().all()
+    return medications, routines, directory
 
-    # 5. Medicine / Pill Adherence
-    if "medicine" in q or "pill" in q or "tablet" in q or "took" in q:
-        m_stmt = select(Medication).where(Medication.elder_id == elder_id, Medication.is_active == True)
-        m_res = await db.execute(m_stmt)
-        meds = m_res.scalars().all()
-        
-        med_taken = None
-        for med in meds:
-            times = [t.strip() for t in med.alarm_times_csv.split(",") if t.strip()]
-            for t in times:
-                # Check if uncompleted
-                a_stmt = select(AdherenceLog).where(
-                    AdherenceLog.elder_id == elder_id,
-                    AdherenceLog.medication_id == med.id,
-                    AdherenceLog.scheduled_slot == t,
-                    AdherenceLog.scheduled_time >= today_start,
-                    AdherenceLog.status.in_(["TAKEN", "VERIFIED_BY_CAREGIVER"])
-                )
-                a_res = await db.execute(a_stmt)
-                if not a_res.scalar_one_or_none():
-                    # Mark this one taken
-                    log = AdherenceLog(
-                        elder_id=elder_id,
-                        medication_id=med.id,
-                        scheduled_slot=t,
-                        scheduled_time=now,
-                        status="TAKEN",
-                        actual_time=now,
-                        notes="Confirmed taken via Voice Assistant"
-                    )
-                    db.add(log)
-                    await db.commit()
-                    med_taken = f"{med.name} ({t})"
-                    break
-            if med_taken:
-                break
-                
-        if med_taken:
-            return {
-                "status": "success",
-                "action": "MEDICINE_CONFIRMED",
-                "spoken_response": f"Confirmed! Marked your {med_taken} as taken. Your family has been notified.",
-                "data": {"medication": med_taken}
-            }
-        else:
-            return {
-                "status": "success",
-                "action": "MEDICINE_ALL_TAKEN",
-                "spoken_response": "Great job! All your scheduled medications for today are already confirmed.",
-                "data": {}
-            }
 
-    # 6. Routine confirmation
-    if "routine" in q or "breakfast" in q or "lunch" in q or "dinner" in q or "walk" in q or "done" in q or "complete" in q:
-        r_stmt = select(DailyRoutine).where(DailyRoutine.elder_id == elder_id, DailyRoutine.is_active == True)
-        r_res = await db.execute(r_stmt)
-        all_routines = r_res.scalars().all()
-        
-        target_r = None
-        for r in all_routines:
-            if any(k in r.title.lower() for k in ["breakfast", "lunch", "dinner", "walk", "water", "bedtime"]):
-                if any(k in q for k in ["breakfast", "lunch", "dinner", "walk", "water", "bedtime"]):
-                    target_r = r
-                    break
-        if not target_r and all_routines:
-            target_r = all_routines[0]
-            
-        if target_r:
-            v_log = VitalsLog(
-                elder_id=elder_id,
-                vital_type="ROUTINE",
-                value_primary=float(target_r.id),
-                context_label=target_r.time_str,
-                unit="milestone",
-                classification="COMPLETED",
-                notes=f"Confirmed routine '{target_r.title}' via Voice Assistant",
-                measured_at=now,
-                created_at=now
-            )
-            db.add(v_log)
-            await db.commit()
-            return {
-                "status": "success",
-                "action": "ROUTINE_COMPLETED",
-                "spoken_response": f"Well done! I have marked your {target_r.title} as completed.",
-                "data": {"routine_id": target_r.id, "title": target_r.title}
-            }
+async def _pending_medicine(db: AsyncSession, elder_id: int, target_name: str = ""):
+    await ensure_daily_medication_logs(db, elder_id)
+    today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    medications, _, _ = await _active_voice_data(db, elder_id)
+    candidates = []
+    for medication in medications:
+        for slot in [value.strip() for value in medication.alarm_times_csv.split(",") if value.strip()]:
+            logs = (await db.execute(select(AdherenceLog).where(
+                AdherenceLog.elder_id == elder_id,
+                AdherenceLog.medication_id == medication.id,
+                AdherenceLog.scheduled_slot == slot,
+                AdherenceLog.scheduled_time >= today_start,
+            ).order_by(AdherenceLog.id.desc()))).scalars().all()
+            if not any(log.status in {"TAKEN", "VERIFIED_BY_CAREGIVER"} for log in logs):
+                candidates.append((medication, slot))
+    if target_name:
+        matched = next((item for item in candidates if target_name.lower() in item[0].name.lower()), None)
+        if matched:
+            return matched
+    return min(candidates, key=lambda item: item[1]) if candidates else None
 
-    # Default fallback
+
+async def _incomplete_routine(db: AsyncSession, elder_id: int, target_name: str = ""):
+    today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    _, routines, _ = await _active_voice_data(db, elder_id)
+    completed = set((await db.execute(select(VitalsLog.value_primary).where(
+        VitalsLog.elder_id == elder_id,
+        VitalsLog.vital_type == "ROUTINE",
+        VitalsLog.measured_at >= today_start,
+    ))).scalars().all())
+    choices = [routine for routine in routines if float(routine.id) not in completed]
+    if target_name:
+        matched = next((item for item in choices if target_name.lower() in item.title.lower()), None)
+        if matched:
+            return matched
+    return min(choices, key=lambda item: item.time_str) if choices else None
+
+
+def _confirmation(action: str, title: str, *, target_id: Optional[int] = None, scheduled_slot: Optional[str] = None):
     return {
-        "status": "success",
-        "action": "GENERAL_QUERY",
-        "spoken_response": f"Hello {elder_name}! I can help you check your pension, book a taxi, call Dr. Rajesh, or confirm your medicines and routines.",
-        "data": {}
+        "requires_confirmation": True,
+        "confirmation": {
+            "action": action,
+            "title": title,
+            "target_id": target_id,
+            "scheduled_slot": scheduled_slot,
+        },
     }
+
+
+@router.post("/{elder_id}/voice-command")
+async def handle_voice_command(
+    elder_id: int,
+    payload: VoiceCommandRequest,
+    current_user: dict = Depends(require_elder),
+    db: AsyncSession = Depends(get_db),
+):
+    """Interpret speech with Gemini, but never make a care change without a tap."""
+    _assert_elder_voice_access(elder_id, current_user)
+    medications, routines, directory = await _active_voice_data(db, elder_id)
+    context = {
+        "medicines": [{"name": m.name, "times": m.alarm_times_csv, "meal": m.meal_relation} for m in medications],
+        "routines": [{"title": r.title, "time": r.time_str} for r in routines],
+        "doctors": [d.name for d in directory if d.category == "DOCTOR"],
+        "taxis": [d.name for d in directory if d.category == "TAXI"],
+    }
+    result = await gemini_voice_service.understand(payload.query.strip(), context)
+    intent = result["intent"]
+    reply = result["reply"]
+
+    if intent == "EMERGENCY":
+        return {"status": "success", "intent": intent, "spoken_response": reply, "show_sos": True, "requires_confirmation": False}
+    if intent == "PENSION_STATUS":
+        month_name = utc_now().strftime("%B %Y")
+        return {"status": "success", "intent": intent, "spoken_response": f"Your pension status for {month_name} is available in Pension. Please check with your bank for the final confirmation.", "requires_confirmation": False}
+    if intent == "NEXT_MEDICINE":
+        candidate = await _pending_medicine(db, elder_id, result["target_name"])
+        if not candidate:
+            reply = "There are no medicines left to take today."
+        else:
+            medication, slot = candidate
+            reply = f"Your next medicine is {medication.name} {medication.strength} at {slot}, {medication.meal_relation.lower()}."
+        return {"status": "success", "intent": intent, "spoken_response": reply, "requires_confirmation": False}
+    if intent == "LOG_WATER":
+        return {"status": "success", "intent": intent, "spoken_response": "Would you like me to record one glass of water?", **_confirmation("LOG_WATER", "YES, RECORD ONE GLASS")}
+    if intent == "TAKE_MEDICINE":
+        candidate = await _pending_medicine(db, elder_id, result["target_name"])
+        if not candidate:
+            return {"status": "success", "intent": intent, "spoken_response": "All scheduled medicines are already marked as taken today.", "requires_confirmation": False}
+        medication, slot = candidate
+        return {"status": "success", "intent": intent, "spoken_response": f"Did you take {medication.name} {medication.strength} scheduled for {slot}?", **_confirmation("TAKE_MEDICINE", "YES, I TOOK IT", target_id=medication.id, scheduled_slot=slot)}
+    if intent == "COMPLETE_ROUTINE":
+        routine = await _incomplete_routine(db, elder_id, result["target_name"])
+        if not routine:
+            return {"status": "success", "intent": intent, "spoken_response": "All routines are already completed today.", "requires_confirmation": False}
+        return {"status": "success", "intent": intent, "spoken_response": f"Did you complete {routine.title}?", **_confirmation("COMPLETE_ROUTINE", "YES, I COMPLETED IT", target_id=routine.id)}
+    if intent in {"BOOK_TAXI", "CALL_DOCTOR"}:
+        category = "TAXI" if intent == "BOOK_TAXI" else "DOCTOR"
+        contact = next((entry for entry in directory if entry.category == category), None)
+        if not contact:
+            return {"status": "success", "intent": intent, "spoken_response": f"No trusted {category.lower()} contact is set up yet. Please ask your caregiver to add one.", "requires_confirmation": False}
+        action = "CALL_TAXI" if category == "TAXI" else "CALL_DOCTOR"
+        return {"status": "success", "intent": intent, "spoken_response": f"Would you like to call {contact.name}?", **_confirmation(action, f"CALL {contact.name.upper()}", target_id=contact.id)}
+    return {"status": "success", "intent": "GENERAL", "spoken_response": reply, "requires_confirmation": False}
+
+
+@router.post("/{elder_id}/voice-command/confirm")
+async def confirm_voice_command(
+    elder_id: int,
+    payload: VoiceCommandConfirmRequest,
+    current_user: dict = Depends(require_elder),
+    db: AsyncSession = Depends(get_db),
+):
+    """Execute one validated action after the senior taps a clear confirmation."""
+    _assert_elder_voice_access(elder_id, current_user)
+    action = payload.action.upper()
+    now = utc_now()
+
+    if action == "LOG_WATER":
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        latest_water = (await db.execute(
+            select(VitalsLog).where(
+                VitalsLog.elder_id == elder_id,
+                VitalsLog.vital_type == "WATER",
+                VitalsLog.measured_at >= today_start,
+            ).order_by(VitalsLog.measured_at.desc()).limit(1)
+        )).scalars().first()
+        updated_glasses = (latest_water.value_primary if latest_water else 0) + 1
+        db.add(VitalsLog(elder_id=elder_id, vital_type="WATER", value_primary=updated_glasses, context_label="HYDRATION", unit="glasses", classification="NORMAL", notes="Confirmed through Gemini voice assistant", measured_at=now, created_at=now))
+        await db.commit()
+        await adherence_broadcaster.publish_elder_update(db, elder_id, "VITAL", "CREATED")
+        return {"status": "success", "spoken_response": f"One glass of water is recorded. You have {int(updated_glasses)} glasses today.", "requires_confirmation": False}
+
+    if action == "TAKE_MEDICINE":
+        candidate = await _pending_medicine(db, elder_id)
+        if not candidate or candidate[0].id != payload.target_id or candidate[1] != payload.scheduled_slot:
+            raise HTTPException(status_code=409, detail="That medicine is no longer waiting for confirmation. Please ask again.")
+        medication, slot = candidate
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        logs = (await db.execute(select(AdherenceLog).where(AdherenceLog.elder_id == elder_id, AdherenceLog.medication_id == medication.id, AdherenceLog.scheduled_slot == slot, AdherenceLog.scheduled_time >= today_start).order_by(AdherenceLog.id.desc()))).scalars().all()
+        log = next((entry for entry in logs if entry.status == "PENDING"), logs[0] if logs else None)
+        if log is None:
+            log = AdherenceLog(elder_id=elder_id, medication_id=medication.id, scheduled_slot=slot, scheduled_time=now, status="TAKEN", actual_time=now, notes="Confirmed through Gemini voice assistant")
+            db.add(log)
+        else:
+            log.status, log.actual_time, log.notes = "TAKEN", now, "Confirmed through Gemini voice assistant"
+        await db.commit()
+        await adherence_broadcaster.broadcast_to_caregiver(caregiver_id=medication.caregiver_id, event_type="PILL_ADHERENCE_UPDATE", payload={"elder_id": elder_id, "medication_name": medication.name, "scheduled_slot": slot, "status": "TAKEN", "message": f"Dose confirmed: {medication.name} ({slot}) was marked taken by the senior."})
+        await adherence_broadcaster.publish_elder_update(db, elder_id, "ADHERENCE", "UPDATED")
+        return {"status": "success", "spoken_response": f"{medication.name} is marked as taken. Your caregiver can see the update.", "requires_confirmation": False}
+
+    if action == "COMPLETE_ROUTINE":
+        routine = await _incomplete_routine(db, elder_id)
+        if not routine or routine.id != payload.target_id:
+            raise HTTPException(status_code=409, detail="That routine is no longer waiting for confirmation. Please ask again.")
+        return await complete_routine(elder_id, routine.id, db)
+
+    if action in {"CALL_DOCTOR", "CALL_TAXI"}:
+        category = "DOCTOR" if action == "CALL_DOCTOR" else "TAXI"
+        _, _, directory = await _active_voice_data(db, elder_id)
+        contact = next((entry for entry in directory if entry.id == payload.target_id and entry.category == category), None)
+        if not contact:
+            raise HTTPException(status_code=404, detail="That trusted contact is no longer available.")
+        return {"status": "success", "spoken_response": f"Calling {contact.name} now.", "call_phone": contact.phone_number, "requires_confirmation": False}
+
+    raise HTTPException(status_code=400, detail="That voice action is not supported.")
