@@ -14,6 +14,7 @@ from app.models.adherence import AdherenceLog
 from app.models.vitals import VitalsLog
 from app.models.directory import ServiceDirectory
 from app.models.sos import EmergencyContact, SOSEvent
+from app.models.workout import SeniorWorkout
 from app.schemas.user import PairDeviceRequest
 from app.schemas.routine import TodayScheduleItem
 from app.services.adherence_service import adherence_broadcaster
@@ -24,12 +25,14 @@ router = APIRouter(prefix="/elder", tags=["Elder Client Flow"])
 
 class VoiceCommandRequest(BaseModel):
     query: str = Field(min_length=1, max_length=400)
+    language: str = Field(default="en", min_length=2, max_length=10)
 
 
 class VoiceCommandConfirmRequest(BaseModel):
     action: str = Field(min_length=1, max_length=40)
     target_id: Optional[int] = None
     scheduled_slot: Optional[str] = Field(default=None, max_length=20)
+    language: str = Field(default="en", min_length=2, max_length=10)
 
 @router.post("/pair-device")
 async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depends(get_db)):
@@ -277,6 +280,14 @@ def _assert_elder_voice_access(elder_id: int, current_user: dict) -> None:
         raise HTTPException(status_code=403, detail="You can use voice help only for your own care plan.")
 
 
+def _voice_language(language: str) -> str:
+    return "ml" if language.casefold().startswith("ml") else "en"
+
+
+def _voice_text(language: str, english: str, malayalam: str) -> str:
+    return malayalam if language == "ml" else english
+
+
 async def _active_voice_data(db: AsyncSession, elder_id: int):
     medications = (await db.execute(select(Medication).where(
         Medication.elder_id == elder_id, Medication.is_active == True
@@ -285,7 +296,7 @@ async def _active_voice_data(db: AsyncSession, elder_id: int):
         DailyRoutine.elder_id == elder_id, DailyRoutine.is_active == True
     ))).scalars().all()
     directory = (await db.execute(select(ServiceDirectory).where(
-        ServiceDirectory.elder_id == elder_id, ServiceDirectory.is_active == True
+        ServiceDirectory.elder_id == elder_id
     ))).scalars().all()
     return medications, routines, directory
 
@@ -328,6 +339,33 @@ async def _incomplete_routine(db: AsyncSession, elder_id: int, target_name: str 
     return min(choices, key=lambda item: item.time_str) if choices else None
 
 
+async def _next_activity(db: AsyncSession, elder_id: int):
+    """Return the earliest outstanding medicine or routine for today's clear answer."""
+    medicine = await _pending_medicine(db, elder_id)
+    routine = await _incomplete_routine(db, elder_id)
+    choices = []
+    if medicine:
+        medication, slot = medicine
+        choices.append((slot, "MEDICINE", f"Take {medication.name} {medication.strength}", medication.meal_relation))
+    if routine:
+        choices.append((routine.time_str, "ROUTINE", routine.title, routine.description or ""))
+    return min(choices, key=lambda item: item[0]) if choices else None
+
+
+async def _next_workout(db: AsyncSession, elder_id: int):
+    """Return the first active workout that is not completed today."""
+    workouts = (await db.execute(select(SeniorWorkout).where(
+        SeniorWorkout.elder_id == elder_id,
+        SeniorWorkout.is_active == True,
+    ))).scalars().all()
+    today = utc_now().date()
+    pending = [
+        workout for workout in workouts
+        if workout.last_completed_at is None or workout.last_completed_at.date() != today
+    ]
+    return min(pending, key=lambda workout: workout.scheduled_time) if pending else None
+
+
 def _confirmation(action: str, title: str, *, target_id: Optional[int] = None, scheduled_slot: Optional[str] = None):
     return {
         "requires_confirmation": True,
@@ -349,14 +387,41 @@ async def handle_voice_command(
 ):
     """Interpret speech with Gemini, but never make a care change without a tap."""
     _assert_elder_voice_access(elder_id, current_user)
+    language = _voice_language(payload.language)
     medications, routines, directory = await _active_voice_data(db, elder_id)
+    workouts = (await db.execute(select(SeniorWorkout).where(
+        SeniorWorkout.elder_id == elder_id, SeniorWorkout.is_active == True
+    ))).scalars().all()
+    profile = (await db.execute(select(HealthProfile).where(
+        HealthProfile.user_id == elder_id
+    ))).scalar_one_or_none()
+    latest_vitals = (await db.execute(select(VitalsLog).where(
+        VitalsLog.elder_id == elder_id,
+        VitalsLog.vital_type.in_(["BLOOD_SUGAR", "BLOOD_PRESSURE", "PULSE"]),
+    ).order_by(desc(VitalsLog.measured_at)).limit(6))).scalars().all()
     context = {
+        "assistant_capabilities": [
+            "today's next medicine, routine, and workout",
+            "mark a medicine, water, or routine only after the senior confirms",
+            "call a trusted doctor or taxi only after confirmation",
+            "pension information available in the app",
+            "emergency SOS guidance",
+        ],
         "medicines": [{"name": m.name, "times": m.alarm_times_csv, "meal": m.meal_relation} for m in medications],
         "routines": [{"title": r.title, "time": r.time_str} for r in routines],
         "doctors": [d.name for d in directory if d.category == "DOCTOR"],
         "taxis": [d.name for d in directory if d.category == "TAXI"],
+        "workouts": [{"title": w.title, "time": w.scheduled_time, "duration_minutes": w.duration_minutes} for w in workouts],
+        "health_notes": {
+            "allergies": profile.allergies if profile else None,
+            "dietary_restrictions": profile.dietary_restrictions if profile else None,
+        },
+        "latest_vitals": [
+            {"type": item.vital_type, "value": item.value_primary, "secondary": item.value_secondary, "unit": item.unit, "classification": item.classification}
+            for item in latest_vitals
+        ],
     }
-    result = await gemini_voice_service.understand(payload.query.strip(), context)
+    result = await gemini_voice_service.understand(payload.query.strip(), context, language)
     intent = result["intent"]
     reply = result["reply"]
 
@@ -364,35 +429,59 @@ async def handle_voice_command(
         return {"status": "success", "intent": intent, "spoken_response": reply, "show_sos": True, "requires_confirmation": False}
     if intent == "PENSION_STATUS":
         month_name = utc_now().strftime("%B %Y")
-        return {"status": "success", "intent": intent, "spoken_response": f"Your pension status for {month_name} is available in Pension. Please check with your bank for the final confirmation.", "requires_confirmation": False}
+        reply = _voice_text(language, f"Your pension status for {month_name} is available in Pension. Please check with your bank for the final confirmation.", "നിങ്ങളുടെ പെൻഷൻ നില Pension വിഭാഗത്തിൽ ലഭ്യമാണ്. അന്തിമ സ്ഥിരീകരണത്തിനായി ബാങ്കുമായി പരിശോധിക്കുക.")
+        return {"status": "success", "intent": intent, "spoken_response": reply, "requires_confirmation": False}
     if intent == "NEXT_MEDICINE":
         candidate = await _pending_medicine(db, elder_id, result["target_name"])
         if not candidate:
-            reply = "There are no medicines left to take today."
+            reply = _voice_text(language, "There are no medicines left to take today.", "ഇന്ന് കഴിക്കാൻ ബാക്കിയുള്ള മരുന്നുകളൊന്നുമില്ല.")
         else:
             medication, slot = candidate
-            reply = f"Your next medicine is {medication.name} {medication.strength} at {slot}, {medication.meal_relation.lower()}."
+            reply = _voice_text(language, f"Your next medicine is {medication.name} {medication.strength} at {slot}, {medication.meal_relation.lower()}.", f"നിങ്ങളുടെ അടുത്ത മരുന്ന് {medication.name} {medication.strength} ആണ്. സമയം {slot}.")
         return {"status": "success", "intent": intent, "spoken_response": reply, "requires_confirmation": False}
+    if intent == "NEXT_ACTIVITY":
+        activity = await _next_activity(db, elder_id)
+        if not activity:
+            reply = _voice_text(language, "You have completed all medicines and routines for today.", "ഇന്നത്തെ എല്ലാ മരുന്നുകളും പ്രവർത്തനങ്ങളും പൂർത്തിയായി.")
+        else:
+            time_str, category, title, detail = activity
+            detail_text = f" {detail}." if detail else ""
+            reply = _voice_text(language, f"Your next {category.lower()} is {title} at {time_str}.{detail_text}", f"നിങ്ങളുടെ അടുത്ത പ്രവർത്തനം {title} ആണ്. സമയം {time_str}.")
+        return {"status": "success", "intent": intent, "spoken_response": reply, "requires_confirmation": False}
+    if intent == "NEXT_WORKOUT":
+        workout = await _next_workout(db, elder_id)
+        if not workout:
+            reply = _voice_text(language, "All workouts are completed for today.", "ഇന്നത്തെ എല്ലാ വ്യായാമങ്ങളും പൂർത്തിയായി.")
+            return {"status": "success", "intent": intent, "spoken_response": reply, "requires_confirmation": False}
+        reply = _voice_text(language, f"Opening your next workout: {workout.title}, scheduled for {workout.scheduled_time}.", f"നിങ്ങളുടെ അടുത്ത വ്യായാമം തുറക്കുന്നു: {workout.title}. സമയം {workout.scheduled_time}.")
+        return {
+            "status": "success",
+            "intent": intent,
+            "spoken_response": reply,
+            "navigate_to": "WORKOUT_PLAYER",
+            "workout_id": workout.id,
+            "requires_confirmation": False,
+        }
     if intent == "LOG_WATER":
-        return {"status": "success", "intent": intent, "spoken_response": "Would you like me to record one glass of water?", **_confirmation("LOG_WATER", "YES, RECORD ONE GLASS")}
+        return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, "Would you like me to record one glass of water?", "ഒരു ഗ്ലാസ് വെള്ളം രേഖപ്പെടുത്തട്ടേ?"), **_confirmation("LOG_WATER", _voice_text(language, "YES, RECORD ONE GLASS", "അതെ, രേഖപ്പെടുത്തുക"))}
     if intent == "TAKE_MEDICINE":
         candidate = await _pending_medicine(db, elder_id, result["target_name"])
         if not candidate:
-            return {"status": "success", "intent": intent, "spoken_response": "All scheduled medicines are already marked as taken today.", "requires_confirmation": False}
+            return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, "All scheduled medicines are already marked as taken today.", "ഇന്നത്തെ എല്ലാ നിശ്ചയിച്ച മരുന്നുകളും എടുത്തതായി രേഖപ്പെടുത്തിയിട്ടുണ്ട്."), "requires_confirmation": False}
         medication, slot = candidate
-        return {"status": "success", "intent": intent, "spoken_response": f"Did you take {medication.name} {medication.strength} scheduled for {slot}?", **_confirmation("TAKE_MEDICINE", "YES, I TOOK IT", target_id=medication.id, scheduled_slot=slot)}
+        return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, f"Did you take {medication.name} {medication.strength} scheduled for {slot}?", f"{slot} സമയത്തേക്കുള്ള {medication.name} എടുത്തോ?"), **_confirmation("TAKE_MEDICINE", _voice_text(language, "YES, I TOOK IT", "അതെ, ഞാൻ എടുത്തു"), target_id=medication.id, scheduled_slot=slot)}
     if intent == "COMPLETE_ROUTINE":
         routine = await _incomplete_routine(db, elder_id, result["target_name"])
         if not routine:
-            return {"status": "success", "intent": intent, "spoken_response": "All routines are already completed today.", "requires_confirmation": False}
-        return {"status": "success", "intent": intent, "spoken_response": f"Did you complete {routine.title}?", **_confirmation("COMPLETE_ROUTINE", "YES, I COMPLETED IT", target_id=routine.id)}
+            return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, "All routines are already completed today.", "ഇന്നത്തെ എല്ലാ പ്രവർത്തനങ്ങളും പൂർത്തിയായി."), "requires_confirmation": False}
+        return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, f"Did you complete {routine.title}?", f"{routine.title} പൂർത്തിയാക്കിയോ?"), **_confirmation("COMPLETE_ROUTINE", _voice_text(language, "YES, I COMPLETED IT", "അതെ, പൂർത്തിയാക്കി"), target_id=routine.id)}
     if intent in {"BOOK_TAXI", "CALL_DOCTOR"}:
         category = "TAXI" if intent == "BOOK_TAXI" else "DOCTOR"
         contact = next((entry for entry in directory if entry.category == category), None)
         if not contact:
-            return {"status": "success", "intent": intent, "spoken_response": f"No trusted {category.lower()} contact is set up yet. Please ask your caregiver to add one.", "requires_confirmation": False}
+            return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, f"No trusted {category.lower()} contact is set up yet. Please ask your caregiver to add one.", "ഇതിനായി വിശ്വസ്ത കോൺടാക്ട് ഇപ്പോഴും ചേർത്തിട്ടില്ല. പരിചരിക്കുന്നയാളോട് ചേർക്കാൻ പറയുക."), "requires_confirmation": False}
         action = "CALL_TAXI" if category == "TAXI" else "CALL_DOCTOR"
-        return {"status": "success", "intent": intent, "spoken_response": f"Would you like to call {contact.name}?", **_confirmation(action, f"CALL {contact.name.upper()}", target_id=contact.id)}
+        return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, f"Would you like to call {contact.name}?", f"{contact.name} നെ വിളിക്കണോ?"), **_confirmation(action, _voice_text(language, f"CALL {contact.name.upper()}", "വിളിക്കുക"), target_id=contact.id)}
     return {"status": "success", "intent": "GENERAL", "spoken_response": reply, "requires_confirmation": False}
 
 
@@ -406,6 +495,7 @@ async def confirm_voice_command(
     """Execute one validated action after the senior taps a clear confirmation."""
     _assert_elder_voice_access(elder_id, current_user)
     action = payload.action.upper()
+    language = _voice_language(payload.language)
     now = utc_now()
 
     if action == "LOG_WATER":
@@ -421,7 +511,8 @@ async def confirm_voice_command(
         db.add(VitalsLog(elder_id=elder_id, vital_type="WATER", value_primary=updated_glasses, context_label="HYDRATION", unit="glasses", classification="NORMAL", notes="Confirmed through Gemini voice assistant", measured_at=now, created_at=now))
         await db.commit()
         await adherence_broadcaster.publish_elder_update(db, elder_id, "VITAL", "CREATED")
-        return {"status": "success", "spoken_response": f"One glass of water is recorded. You have {int(updated_glasses)} glasses today.", "requires_confirmation": False}
+        reply = _voice_text(language, f"One glass of water is recorded. You have {int(updated_glasses)} glasses today.", f"ഒരു ഗ്ലാസ് വെള്ളം രേഖപ്പെടുത്തി. ഇന്ന് നിങ്ങൾ {int(updated_glasses)} ഗ്ലാസ് വെള്ളം കുടിച്ചു.")
+        return {"status": "success", "spoken_response": reply, "requires_confirmation": False}
 
     if action == "TAKE_MEDICINE":
         candidate = await _pending_medicine(db, elder_id)
@@ -439,13 +530,16 @@ async def confirm_voice_command(
         await db.commit()
         await adherence_broadcaster.broadcast_to_caregiver(caregiver_id=medication.caregiver_id, event_type="PILL_ADHERENCE_UPDATE", payload={"elder_id": elder_id, "medication_name": medication.name, "scheduled_slot": slot, "status": "TAKEN", "message": f"Dose confirmed: {medication.name} ({slot}) was marked taken by the senior."})
         await adherence_broadcaster.publish_elder_update(db, elder_id, "ADHERENCE", "UPDATED")
-        return {"status": "success", "spoken_response": f"{medication.name} is marked as taken. Your caregiver can see the update.", "requires_confirmation": False}
+        reply = _voice_text(language, f"{medication.name} is marked as taken. Your caregiver can see the update.", f"{medication.name} എടുത്തതായി രേഖപ്പെടുത്തി. പരിചരിക്കുന്നയാൾക്ക് ഈ വിവരം കാണാം.")
+        return {"status": "success", "spoken_response": reply, "requires_confirmation": False}
 
     if action == "COMPLETE_ROUTINE":
         routine = await _incomplete_routine(db, elder_id)
         if not routine or routine.id != payload.target_id:
             raise HTTPException(status_code=409, detail="That routine is no longer waiting for confirmation. Please ask again.")
-        return await complete_routine(elder_id, routine.id, db)
+        await complete_routine(elder_id, routine.id, db)
+        reply = _voice_text(language, f"{routine.title} is marked as completed.", f"{routine.title} പൂർത്തിയായതായി രേഖപ്പെടുത്തി.")
+        return {"status": "success", "spoken_response": reply, "requires_confirmation": False}
 
     if action in {"CALL_DOCTOR", "CALL_TAXI"}:
         category = "DOCTOR" if action == "CALL_DOCTOR" else "TAXI"
@@ -453,6 +547,7 @@ async def confirm_voice_command(
         contact = next((entry for entry in directory if entry.id == payload.target_id and entry.category == category), None)
         if not contact:
             raise HTTPException(status_code=404, detail="That trusted contact is no longer available.")
-        return {"status": "success", "spoken_response": f"Calling {contact.name} now.", "call_phone": contact.phone_number, "requires_confirmation": False}
+        reply = _voice_text(language, f"Calling {contact.name} now.", f"ഇപ്പോൾ {contact.name} നെ വിളിക്കുന്നു.")
+        return {"status": "success", "spoken_response": reply, "call_phone": contact.phone_number, "requires_confirmation": False}
 
     raise HTTPException(status_code=400, detail="That voice action is not supported.")
