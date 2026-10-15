@@ -408,7 +408,7 @@ async def _active_voice_data(db: AsyncSession, elder_id: int):
     ))).scalars().all()
     directory = (await db.execute(select(ServiceDirectory).where(
         ServiceDirectory.elder_id == elder_id
-    ))).scalars().all()
+    ).order_by(ServiceDirectory.is_favorite.desc(), ServiceDirectory.name))).scalars().all()
     return medications, routines, directory
 
 
@@ -528,8 +528,8 @@ async def handle_voice_command(
         ],
         "medicines": [{"name": m.name, "times": m.alarm_times_csv, "meal": m.meal_relation} for m in medications],
         "routines": [{"title": r.title, "time": r.time_str} for r in routines],
-        "doctors": [d.name for d in directory if d.category == "DOCTOR"],
-        "taxis": [d.name for d in directory if d.category == "TAXI"],
+        "doctors": [d.name for d in directory if d.category in {"DOCTOR", "HOSPITAL"}],
+        "taxis": [d.name for d in directory if d.category in {"TAXI", "AMBULANCE"}],
         "workouts": [{"title": w.title, "time": w.scheduled_time, "duration_minutes": w.duration_minutes} for w in workouts],
         "health_notes": {
             "allergies": profile.allergies if profile else None,
@@ -596,11 +596,18 @@ async def handle_voice_command(
             return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, "All routines are already completed today.", "ഇന്നത്തെ എല്ലാ പ്രവർത്തനങ്ങളും പൂർത്തിയായി."), "requires_confirmation": False}
         return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, f"Did you complete {routine.title}?", f"{routine.title} പൂർത്തിയാക്കിയോ?"), **_confirmation("COMPLETE_ROUTINE", _voice_text(language, "YES, I COMPLETED IT", "അതെ, പൂർത്തിയാക്കി"), target_id=routine.id)}
     if intent in {"BOOK_TAXI", "CALL_DOCTOR"}:
-        category = "TAXI" if intent == "BOOK_TAXI" else "DOCTOR"
-        contact = next((entry for entry in directory if entry.category == category), None)
+        categories = {"TAXI", "AMBULANCE"} if intent == "BOOK_TAXI" else {"DOCTOR", "HOSPITAL"}
+        category_label = "taxi" if intent == "BOOK_TAXI" else "doctor"
+        target_name = (result.get("target_name") or "").strip().lower()
+        candidates = [entry for entry in directory if entry.category in categories]
+        contact = None
+        if target_name:
+            contact = next((entry for entry in candidates if target_name in entry.name.lower()), None)
         if not contact:
-            return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, f"No trusted {category.lower()} contact is set up yet. Please ask your caregiver to add one.", "ഇതിനായി വിശ്വസ്ത കോൺടാക്ട് ഇപ്പോഴും ചേർത്തിട്ടില്ല. പരിചരിക്കുന്നയാളോട് ചേർക്കാൻ പറയുക."), "requires_confirmation": False}
-        action = "CALL_TAXI" if category == "TAXI" else "CALL_DOCTOR"
+            contact = next((entry for entry in candidates if entry.is_favorite), None) or (candidates[0] if candidates else None)
+        if not contact:
+            return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, f"No trusted {category_label} contact is set up yet. Please ask your caregiver to add one.", "ഇതിനായി വിശ്വസ്ത കോൺടാക്ട് ഇപ്പോഴും ചേർത്തിട്ടില്ല. പരിചരിക്കുന്നയാളോട് ചേർക്കാൻ പറയുക."), "requires_confirmation": False}
+        action = "CALL_TAXI" if intent == "BOOK_TAXI" else "CALL_DOCTOR"
         return {"status": "success", "intent": intent, "spoken_response": _voice_text(language, f"Would you like to call {contact.name}?", f"{contact.name} നെ വിളിക്കണോ?"), **_confirmation(action, _voice_text(language, f"CALL {contact.name.upper()}", "വിളിക്കുക"), target_id=contact.id)}
     return {"status": "success", "intent": "GENERAL", "spoken_response": reply, "requires_confirmation": False}
 
@@ -662,9 +669,9 @@ async def confirm_voice_command(
         return {"status": "success", "spoken_response": reply, "requires_confirmation": False}
 
     if action in {"CALL_DOCTOR", "CALL_TAXI"}:
-        category = "DOCTOR" if action == "CALL_DOCTOR" else "TAXI"
+        categories = {"DOCTOR", "HOSPITAL"} if action == "CALL_DOCTOR" else {"TAXI", "AMBULANCE"}
         _, _, directory = await _active_voice_data(db, elder_id)
-        contact = next((entry for entry in directory if entry.id == payload.target_id and entry.category == category), None)
+        contact = next((entry for entry in directory if entry.id == payload.target_id and entry.category in categories), None)
         if not contact:
             raise HTTPException(status_code=404, detail="That trusted contact is no longer available.")
         reply = _voice_text(language, f"Calling {contact.name} now.", f"ഇപ്പോൾ {contact.name} നെ വിളിക്കുന്നു.")

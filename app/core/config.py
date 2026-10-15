@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # Gemini is called only from the backend. Leave the key blank until it is
     # added privately to .env; never expose it to the Flutter application.
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
     
     # Email & SMTP Dispatch (Gmail)
     SMTP_HOST: str = "smtp.gmail.com"

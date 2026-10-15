@@ -77,6 +77,9 @@ def _local_intent(query: str, language: str = "en") -> dict[str, str]:
         return {"intent": "BOOK_TAXI", "reply": reply("taxi", "I can help you call your trusted taxi contact."), "target_name": ""}
     if any(word in text for word in ("doctor", "clinic", "appointment", "ഡോക്ടർ")):
         return {"intent": "CALL_DOCTOR", "reply": reply("doctor", "I can help you call your trusted doctor."), "target_name": ""}
+    if text.startswith("call ") or " call " in text or "വിളിക്ക" in text:
+        target = text.replace("call ", "").replace("dr.", "").replace("dr ", "").strip()
+        return {"intent": "CALL_DOCTOR", "reply": reply("doctor", "I can help you call your trusted doctor."), "target_name": target}
     if any(word in text for word in ("medicine", "medication", "pill", "tablet", "took", *malayalam_medicine)):
         return {"intent": "TAKE_MEDICINE", "reply": reply("medicine", "I will check the medicine waiting for you."), "target_name": ""}
     if any(word in text for word in ("done", "completed", "finished", "പൂർത്തി")):
@@ -131,8 +134,9 @@ Care plan summary (do not repeat private details):
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.1,
-                "maxOutputTokens": 180,
+                "maxOutputTokens": 1024,
                 "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
         try:
@@ -144,7 +148,14 @@ Care plan summary (do not repeat private details):
                 )
             response.raise_for_status()
             payload = response.json()
-            text = payload["candidates"][0]["content"]["parts"][0]["text"]
+            text = payload["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if text.startswith("```"):
+                lines = text.splitlines()
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                text = "\n".join(lines).strip()
             result = json.loads(text)
         except httpx.HTTPStatusError as error:
             logger.warning(
