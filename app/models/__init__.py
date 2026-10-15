@@ -1,4 +1,4 @@
-from app.models.user import User, HealthProfile
+from app.models.user import User, HealthProfile, UserDevice
 from app.models.otp import OTPVerification
 from app.models.pairing import ElderPairing
 from app.models.medication import Medication
@@ -13,6 +13,7 @@ from app.models.workout import SeniorWorkout
 __all__ = [
     "User",
     "HealthProfile",
+    "UserDevice",
     "OTPVerification",
     "ElderPairing",
     "Medication",

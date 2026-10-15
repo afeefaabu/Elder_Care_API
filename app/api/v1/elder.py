@@ -6,8 +6,8 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
 from app.core.security import create_access_token, get_current_user_payload, require_elder
-from app.services.access_control_service import require_elder_access
-from app.models.user import User, HealthProfile
+from app.services.access_control_service import require_care_plan_management, require_elder_access
+from app.models.user import User, HealthProfile, UserDevice
 from app.models.pairing import ElderPairing
 from app.models.routine import DailyRoutine
 from app.models.medication import Medication
@@ -78,7 +78,37 @@ async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depen
     elder_res = await db.execute(elder_stmt)
     elder = elder_res.scalar_one()
     
-    if payload.fcm_token:
+    fingerprint = (payload.device_fingerprint or "Legacy Elder Client").strip() or "Legacy Elder Client"
+    device_result = await db.execute(
+        select(UserDevice).where(
+            UserDevice.user_id == elder.id,
+            UserDevice.device_fingerprint == fingerprint,
+        )
+    )
+    device = device_result.scalar_one_or_none()
+    if device and not device.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This device was removed by the caregiver. Use a new trusted device or contact your caregiver.",
+        )
+    if not device:
+        device = UserDevice(
+            user_id=elder.id,
+            device_fingerprint=fingerprint,
+            fcm_token=payload.fcm_token,
+            registered_at=utc_now(),
+            last_seen_at=utc_now(),
+        )
+        db.add(device)
+        await db.flush()
+    else:
+        if payload.fcm_token:
+            device.fcm_token = payload.fcm_token
+        device.last_seen_at = utc_now()
+
+    # Legacy field is retained only for older clients. Push-capable clients
+    # must use user_devices so one new phone never overwrites another phone.
+    if payload.fcm_token and not elder.fcm_token:
         elder.fcm_token = payload.fcm_token
     if payload.preferred_language:
         elder.preferred_language = payload.preferred_language
@@ -90,7 +120,8 @@ async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depen
         "sub": str(elder.id),
         "role": "ELDER",
         "name": elder.full_name,
-        "phone_number": elder.phone_number
+        "phone_number": elder.phone_number,
+        "device_id": device.id,
     })
     
     return {
@@ -101,6 +132,55 @@ async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depen
         "spoken_welcome": f"Welcome {elder.full_name}! Your daily schedule and family network are connected.",
         "preferred_language": elder.preferred_language
     }
+
+
+@router.get("/{elder_id}/devices")
+async def list_elder_devices(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    """List trusted elder devices without exposing notification tokens."""
+    await require_elder_access(db, current_user, elder_id)
+    result = await db.execute(
+        select(UserDevice)
+        .where(UserDevice.user_id == elder_id)
+        .order_by(UserDevice.last_seen_at.desc())
+    )
+    return [
+        {
+            "id": device.id,
+            "device_fingerprint": device.device_fingerprint,
+            "is_active": device.is_active,
+            "registered_at": device.registered_at,
+            "last_seen_at": device.last_seen_at,
+            "revoked_at": device.revoked_at,
+        }
+        for device in result.scalars().all()
+    ]
+
+
+@router.delete("/{elder_id}/devices/{device_id}")
+async def revoke_elder_device(
+    elder_id: int,
+    device_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke one lost device while retaining other family devices and the pair code."""
+    await require_care_plan_management(db, current_user, elder_id)
+    device = await db.get(UserDevice, device_id)
+    if not device or device.user_id != elder_id:
+        raise HTTPException(status_code=404, detail="Trusted device not found.")
+    if not device.is_active:
+        return {"status": "success", "message": "This device was already removed."}
+    device.is_active = False
+    device.revoked_at = utc_now()
+    await db.commit()
+    await adherence_broadcaster.publish_elder_update(
+        db, elder_id, "DEVICE", "REVOKED", device_id=device_id
+    )
+    return {"status": "success", "message": "Trusted device removed. Its session is now invalid."}
 
 @router.get("/{elder_id}/today-schedule")
 async def get_today_schedule(

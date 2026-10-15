@@ -6,7 +6,17 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from httpx import AsyncClient, ASGITransport
 from app.main import app
-from app.core.database import init_db
+from app.core.database import AsyncSessionLocal, init_db
+from app.models.otp import OTPVerification
+from sqlalchemy import select
+
+
+async def _otp_for(identifier: str) -> str:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(OTPVerification).where(OTPVerification.identifier == identifier)
+        )
+        return result.scalar_one().otp_code
 
 async def run_e2e_tests():
     print("\n=======================================================")
@@ -32,7 +42,7 @@ async def run_e2e_tests():
         
         verify_res = await client.post("/api/v1/auth/verify-otp", json={
             "phone_number": "+919876543210",
-            "otp_code": "123456",
+            "otp_code": await _otp_for("+919876543210"),
             "full_name": "Ananya (Daughter)",
             "relationship": "Daughter"
         })

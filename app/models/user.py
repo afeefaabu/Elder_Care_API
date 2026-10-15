@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.core.database import Base, utc_now
 from app.models.workout import SeniorWorkout
@@ -28,6 +28,32 @@ class User(Base):
     emergency_contacts = relationship("EmergencyContact", back_populates="elder")
     vitals = relationship("VitalsLog", back_populates="elder", cascade="all, delete-orphan")
     workouts = relationship("SeniorWorkout", back_populates="elder", cascade="all, delete-orphan")
+    devices = relationship("UserDevice", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserDevice(Base):
+    """A separately revocable mobile installation belonging to one user.
+
+    JWTs issued during device pairing carry this record id, which lets a
+    caregiver disable one lost elder phone without logging out other trusted
+    devices or changing the family's pairing code.
+    """
+
+    __tablename__ = "user_devices"
+    __table_args__ = (
+        UniqueConstraint("user_id", "device_fingerprint", name="uq_user_device_fingerprint"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    device_fingerprint = Column(String(128), nullable=False)
+    fcm_token = Column(String(512), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    registered_at = Column(DateTime, default=utc_now, nullable=False)
+    last_seen_at = Column(DateTime, default=utc_now, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="devices")
 
 class HealthProfile(Base):
     __tablename__ = "health_profiles"

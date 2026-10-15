@@ -6,7 +6,23 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from httpx import AsyncClient, ASGITransport
 from app.main import app
-from app.core.database import init_db
+from app.core.database import AsyncSessionLocal, init_db
+from app.models.otp import OTPVerification
+from app.services.email_service import email_service
+from sqlalchemy import select
+
+
+async def _otp_for(identifier: str) -> str:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(OTPVerification).where(OTPVerification.identifier == identifier)
+        )
+        return result.scalar_one().otp_code
+
+
+async def _test_email_delivery(*, to_email: str, otp_code: str) -> bool:
+    """Keep a regression test from attempting a live SMTP delivery."""
+    return True
 
 async def run_registration_tests():
     print("\n=======================================================")
@@ -14,6 +30,7 @@ async def run_registration_tests():
     print("=======================================================\n")
     
     await init_db()
+    email_service.send_otp_email = _test_email_delivery
     
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -33,7 +50,7 @@ async def run_registration_tests():
             "full_name": "Priya Sharma (Daughter)",
             "registration_type": "PHONE",
             "phone_number": test_phone,
-            "otp_code": "123456",
+            "otp_code": await _otp_for(test_phone),
             "password": "SecurePassword123!",
             "role": "CAREGIVER",
             "relationship_to_elder": "Daughter",
@@ -62,7 +79,7 @@ async def run_registration_tests():
             "full_name": "Dr. Karthik (Caregiver Son)",
             "registration_type": "EMAIL",
             "email": test_email,
-            "otp_code": "123456",
+            "otp_code": await _otp_for(test_email),
             "password": "DoctorPassword456!",
             "role": "CAREGIVER",
             "relationship_to_elder": "Son",

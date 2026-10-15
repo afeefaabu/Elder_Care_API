@@ -6,8 +6,19 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from httpx import AsyncClient, ASGITransport
 from app.main import app
-from app.core.database import init_db
+from app.core.database import AsyncSessionLocal, init_db
 from app.core.security import create_access_token
+from app.models.otp import OTPVerification
+from app.models.user import User
+from sqlalchemy import select
+
+
+async def _otp_for(identifier: str) -> str:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(OTPVerification).where(OTPVerification.identifier == identifier)
+        )
+        return result.scalar_one().otp_code
 
 async def test_auth_and_authorisation():
     print("\n=======================================================")
@@ -47,7 +58,7 @@ async def test_auth_and_authorisation():
             "full_name": "Kavitha Raman",
             "registration_type": "PHONE",
             "phone_number": cg_phone,
-            "otp_code": "123456",
+            "otp_code": await _otp_for(cg_phone),
             "password": "CorrectPassword!2026",
             "role": "CAREGIVER",
             "relationship_to_elder": "Daughter"
@@ -97,9 +108,20 @@ async def test_auth_and_authorisation():
         # -------------------------------------------------------------
         print("\n--- [PART 2: AUTHORIZATION / RBAC] ---")
         
+        # Create a real active Elder account, then issue a token for it. A
+        # forged user id must return 401 before role authorization is reached.
+        async with AsyncSessionLocal() as session:
+            elder_user = User(
+                full_name="Senior Citizen Ramanathan",
+                role="ELDER",
+            )
+            session.add(elder_user)
+            await session.commit()
+            await session.refresh(elder_user)
+
         # Generate Elder Token (role: "ELDER")
         elder_token = create_access_token({
-            "sub": "9999",
+            "sub": str(elder_user.id),
             "role": "ELDER",
             "phone_number": "+919888877777",
             "name": "Senior Citizen Ramanathan"

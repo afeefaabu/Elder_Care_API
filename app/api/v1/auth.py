@@ -84,22 +84,9 @@ async def register_user(payload: UserRegisterRequest, db: AsyncSession = Depends
             detail="Public registration can create caregiver accounts only.",
         )
     identifier = payload.phone_number if payload.registration_type == "PHONE" else payload.email
-    
-    # 1. Verify OTP code
-    otp_stmt = select(OTPVerification).where(
-        OTPVerification.identifier == identifier,
-        OTPVerification.otp_code == payload.otp_code.strip()
-    )
-    otp_res = await db.execute(otp_stmt)
-    otp_entry = otp_res.scalar_one_or_none()
-    
-    if not otp_entry:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired verification code. Please request a new OTP."
-        )
-        
-    # 2. Duplicate Check
+
+    # Reject existing accounts before consuming a verification code. The client
+    # can then send the person to sign in instead of losing a valid OTP.
     if payload.registration_type == "PHONE":
         dup_stmt = select(User).where(User.phone_number == payload.phone_number)
         dup_res = await db.execute(dup_stmt)
@@ -116,8 +103,23 @@ async def register_user(payload: UserRegisterRequest, db: AsyncSession = Depends
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Email address {payload.email} is already registered. Please log in."
             )
-            
-    # 3. Create User
+
+    # A verification code is both time-limited and single-use. These checks
+    # must happen on the server even when the delivery channel is mocked.
+    otp_stmt = select(OTPVerification).where(
+        OTPVerification.identifier == identifier,
+        OTPVerification.otp_code == payload.otp_code.strip(),
+        OTPVerification.is_verified == False,
+    )
+    otp_res = await db.execute(otp_stmt)
+    otp_entry = otp_res.scalar_one_or_none()
+    if not otp_entry or otp_entry.expires_at < utc_now():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code. Please request a new OTP.",
+        )
+
+    # Create User
     hashed_pwd = get_password_hash(payload.password) if payload.password else None
     
     new_user = User(
@@ -197,11 +199,15 @@ async def login_user(payload: UserLoginRequest, db: AsyncSession = Depends(get_d
     elif payload.login_method == "OTP":
         otp_stmt = select(OTPVerification).where(
             OTPVerification.identifier == ident,
-            OTPVerification.otp_code == payload.otp_code.strip()
+            OTPVerification.otp_code == payload.otp_code.strip(),
+            OTPVerification.is_verified == False,
         )
         otp_res = await db.execute(otp_stmt)
-        if not otp_res.scalar_one_or_none():
+        otp_entry = otp_res.scalar_one_or_none()
+        if not otp_entry or otp_entry.expires_at < utc_now():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code.")
+        otp_entry.is_verified = True
+        await db.commit()
                 
     token = create_access_token({
         "sub": str(user.id),
@@ -224,7 +230,21 @@ async def login_user(payload: UserLoginRequest, db: AsyncSession = Depends(get_d
 
 @router.post("/verify-otp", response_model=TokenResponse)
 async def legacy_verify_otp(payload: OTPVerify, db: AsyncSession = Depends(get_db)):
-    # Retained for existing mobile flow compatibility
+    """Retained wire format for older clients, with modern OTP security."""
+    otp_result = await db.execute(
+        select(OTPVerification).where(
+            OTPVerification.identifier == payload.phone_number.strip(),
+            OTPVerification.otp_code == payload.otp_code.strip(),
+            OTPVerification.is_verified == False,
+        )
+    )
+    otp_entry = otp_result.scalar_one_or_none()
+    if not otp_entry or otp_entry.expires_at < utc_now():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code. Please request a new OTP.",
+        )
+
     stmt = select(User).where(User.phone_number == payload.phone_number)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
@@ -237,8 +257,9 @@ async def legacy_verify_otp(payload: OTPVerify, db: AsyncSession = Depends(get_d
             relationship_to_elder=payload.relationship or "Daughter",
         )
         db.add(user)
-        await db.commit()
-        await db.refresh(user)
+    otp_entry.is_verified = True
+    await db.commit()
+    await db.refresh(user)
         
     token = create_access_token({
         "sub": str(user.id),

@@ -35,7 +35,7 @@ class ElderProvisionResponse(BaseModel):
 
 class PairDeviceRequest(BaseModel):
     pair_code: str = Field(..., example="729140")
-    device_fingerprint: Optional[str] = Field(None, example="Samsung A14 - 4G")
+    device_fingerprint: Optional[str] = Field(None, min_length=1, max_length=128, example="Samsung A14 - 4G")
     fcm_token: Optional[str] = Field(None)
     preferred_language: Optional[str] = Field("en")
 

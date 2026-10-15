@@ -6,7 +6,7 @@ from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.models.user import User
+from app.models.user import User, UserDevice
 from app.core.config import settings
 
 security = HTTPBearer(auto_error=False)
@@ -73,6 +73,15 @@ async def get_current_user_payload(
             detail="This account is unavailable. Please sign in again or contact an administrator.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    device_id = payload.get("device_id")
+    if device_id is not None:
+        device = await db.get(UserDevice, int(device_id))
+        if not device or device.user_id != user.id or not device.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="This device is no longer authorized. Please connect it again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     # Always use the current role from storage, so a role change takes effect
     # immediately instead of waiting for an old token to expire.
     payload["role"] = user.role

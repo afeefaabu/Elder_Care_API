@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Elder Care Production API"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
+    ENVIRONMENT: str = "development"
     
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./elder_care.db"
@@ -56,5 +57,18 @@ class Settings(BaseSettings):
     # working directory. This keeps startup seeding reliable in VS Code,
     # Docker and service launches.
     model_config = SettingsConfigDict(env_file=BACKEND_ROOT / ".env", extra="ignore")
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT.casefold() == "production"
+
+    @property
+    def has_real_sms_delivery(self) -> bool:
+        return (
+            not self.MOCK_EXTERNAL_SERVICES
+            and self.TWILIO_ACCOUNT_SID not in {"", "mock_sid"}
+            and self.TWILIO_AUTH_TOKEN not in {"", "mock_token"}
+            and bool(self.TWILIO_FROM_PHONE)
+        )
 
 settings = Settings()

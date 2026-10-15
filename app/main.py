@@ -1,11 +1,13 @@
 import os
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, status
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
-from app.core.database import init_db
+from app.core.database import init_db, engine
 from app.api.v1.router import api_router
 from app.services.admin_seed_service import seed_default_admin
 from app.services.watchdog_service import watchdog_engine
@@ -64,8 +66,26 @@ async def root():
 
 @app.get(f"{settings.API_V1_STR}/health")
 async def health_check():
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+    except Exception:
+        logger.exception("Readiness database check failed")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "NOT_READY", "database": "UNAVAILABLE"},
+        )
+
+    external_delivery = "REAL" if settings.has_real_sms_delivery else "SIMULATED"
     return {
         "status": "HEALTHY",
         "database": "CONNECTED",
-        "watchdog_active": watchdog_engine.is_running
+        "watchdog_active": watchdog_engine.is_running,
+        "environment": settings.ENVIRONMENT,
+        "sms_delivery": external_delivery,
+        "production_configuration_ready": (
+            settings.is_production
+            and settings.SECRET_KEY != "temporary-secret-key-for-elder-care-change-in-production"
+            and settings.has_real_sms_delivery
+        ),
     }
