@@ -6,6 +6,7 @@ from app.core.database import AsyncSessionLocal, utc_now
 from app.core.config import settings
 from app.models.adherence import AdherenceLog
 from app.models.medication import Medication
+from app.models.pairing import ElderPairing
 from app.models.user import User
 from app.services.telephony_service import telephony_service
 from app.services.adherence_service import adherence_broadcaster
@@ -68,9 +69,16 @@ class MedicationEscalationWatchdog:
                 log.escalation_notified = True
                 log.escalation_time = now
                 
-                caregiver_stmt = select(User).where(User.id == med.caregiver_id)
+                caregiver_stmt = (
+                    select(User)
+                    .join(ElderPairing, ElderPairing.caregiver_id == User.id)
+                    .where(
+                        ElderPairing.elder_id == elder.id,
+                        ElderPairing.status == "ACTIVE",
+                    )
+                )
                 cg_res = await session.execute(caregiver_stmt)
-                caregiver = cg_res.scalar_one_or_none()
+                caregivers = cg_res.scalars().all()
                 
                 alert_text = (
                     f"URGENT: {elder.full_name} has not taken their {log.scheduled_slot} "
@@ -78,17 +86,18 @@ class MedicationEscalationWatchdog:
                     f"25 minutes have elapsed without confirmation. Please call them immediately!"
                 )
                 
-                if caregiver and caregiver.phone_number:
-                    await telephony_service.send_sms(
-                        to_phone=caregiver.phone_number,
-                        body=alert_text
-                    )
+                for caregiver in caregivers:
+                    if caregiver.phone_number:
+                        await telephony_service.send_sms(
+                            to_phone=caregiver.phone_number,
+                            body=alert_text,
+                        )
                     await telephony_service.send_push_notification(
                         token=caregiver.fcm_token or "mock_fcm_token",
                         title=f"🚨 MISSED MEDICATION: {elder.full_name}",
                         body=alert_text,
                         channel_id="siren_escalation_channel",
-                        data={"adherence_id": log.id, "elder_id": elder.id, "action": "CALL_ELDER"}
+                        data={"adherence_id": log.id, "elder_id": elder.id, "action": "CALL_ELDER"},
                     )
                     await adherence_broadcaster.broadcast_to_caregiver(
                         caregiver_id=caregiver.id,
@@ -100,8 +109,8 @@ class MedicationEscalationWatchdog:
                             "medication_name": med.name,
                             "scheduled_slot": log.scheduled_slot,
                             "status": log.status,
-                            "alert_message": alert_text
-                        }
+                            "alert_message": alert_text,
+                        },
                     )
             
             if overdue_items:

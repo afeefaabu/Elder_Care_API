@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
 from app.core.security import get_current_user_payload, require_caregiver
@@ -18,6 +18,7 @@ from app.schemas.user import (
 from app.services.pairing_service import pairing_service
 from app.services.adherence_service import adherence_broadcaster
 from app.services.daily_medication_service import ensure_daily_medication_logs
+from app.services.access_control_service import require_care_plan_management
 
 router = APIRouter(prefix="/caregiver", tags=["Caregiver Operations"])
 
@@ -147,7 +148,10 @@ async def list_caregiver_elders(
         select(User, HealthProfile, ElderPairing)
         .join(ElderPairing, User.id == ElderPairing.elder_id)
         .outerjoin(HealthProfile, User.id == HealthProfile.user_id)
-        .where(ElderPairing.caregiver_id == caregiver_id)
+        .where(
+            ElderPairing.caregiver_id == caregiver_id,
+            ElderPairing.status == "ACTIVE",
+        )
         .order_by(ElderPairing.id.desc())
     )
     result = await db.execute(stmt)
@@ -184,7 +188,11 @@ async def get_elder_profile(
         select(User, HealthProfile, ElderPairing)
         .join(ElderPairing, User.id == ElderPairing.elder_id)
         .outerjoin(HealthProfile, User.id == HealthProfile.user_id)
-        .where(ElderPairing.caregiver_id == caregiver_id, User.id == elder_id)
+        .where(
+            ElderPairing.caregiver_id == caregiver_id,
+            ElderPairing.status == "ACTIVE",
+            User.id == elder_id,
+        )
     )
     res = await db.execute(stmt)
     row = res.first()
@@ -213,11 +221,7 @@ async def update_elder_profile(
     current_user: dict = Depends(require_caregiver),
     db: AsyncSession = Depends(get_db)
 ):
-    caregiver_id = int(current_user.get("sub"))
-    p_stmt = select(ElderPairing).where(ElderPairing.caregiver_id == caregiver_id, ElderPairing.elder_id == elder_id)
-    p_res = await db.execute(p_stmt)
-    if not p_res.first():
-        raise HTTPException(status_code=403, detail="Unauthorized: Elder not paired with this caregiver")
+    await require_care_plan_management(db, current_user, elder_id)
         
     u_stmt = select(User).where(User.id == elder_id)
     u_res = await db.execute(u_stmt)
@@ -265,9 +269,22 @@ async def unpair_elder(
     db: AsyncSession = Depends(get_db)
 ):
     caregiver_id = int(current_user.get("sub"))
-    del_stmt = delete(ElderPairing).where(ElderPairing.caregiver_id == caregiver_id, ElderPairing.elder_id == elder_id)
-    res = await db.execute(del_stmt)
+    pairing = await db.scalar(
+        select(ElderPairing)
+        .where(
+            ElderPairing.caregiver_id == caregiver_id,
+            ElderPairing.elder_id == elder_id,
+            ElderPairing.status == "ACTIVE",
+        )
+        .order_by(ElderPairing.id.desc())
+    )
+    if pairing is None:
+        raise HTTPException(status_code=404, detail="No active connection was found for this senior.")
+    pairing.status = "REVOKED"
     await db.commit()
+    await adherence_broadcaster.broadcast_to_user(
+        elder_id, "ELDER_DATA_UPDATED", {"elder_id": elder_id, "resource": "PAIRING", "action": "REVOKED"}
+    )
     return {"status": "success", "message": f"Elder {elder_id} successfully unpaired."}
 
 @router.get("/dashboard/{elder_id}")
@@ -276,6 +293,7 @@ async def get_guardian_dashboard(
     current_user: dict = Depends(require_caregiver),
     db: AsyncSession = Depends(get_db)
 ):
+    await require_care_plan_management(db, current_user, elder_id)
     await ensure_daily_medication_logs(db, elder_id)
     today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     

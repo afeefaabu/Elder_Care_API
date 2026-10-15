@@ -69,6 +69,7 @@ async def run_e2e_tests():
         })
         assert pair_res.status_code == 200, pair_res.text
         elder_token = pair_res.json()["access_token"]
+        elder_headers = {"Authorization": f"Bearer {elder_token}"}
         print(f"[PASS] [4/10] Elder 15-Second Pairing passed: Linked phone to Ramanathan")
         
         # 5. Caregiver adds Metformin 500mg
@@ -92,14 +93,17 @@ async def run_e2e_tests():
         print(f"[PASS] [5/10] Medication Configurator passed: Added Metformin 500mg with 25-Min Watchdog")
         
         # 6. Fetch Today's 24-Hour Schedule for Elder
-        sched_res = await client.get(f"/api/v1/elder/{elder_id}/today-schedule")
+        sched_res = await client.get(
+            f"/api/v1/elder/{elder_id}/today-schedule",
+            headers=elder_headers,
+        )
         assert sched_res.status_code == 200
         schedule = sched_res.json()
         assert schedule["total_items"] > 0
         print(f"[PASS] [6/10] 24-Hour Living Routine passed: {schedule['total_items']} items loaded (Water, Meals, Pills, Yoga)")
         
         # 7. Elder logs pill as TAKEN ("I Took It" action)
-        log_res = await client.post("/api/v1/adherence/log", json={
+        log_res = await client.post("/api/v1/adherence/log", headers=elder_headers, json={
             "elder_id": elder_id,
             "medication_id": med_id,
             "scheduled_slot": "08:30",
@@ -117,7 +121,7 @@ async def run_e2e_tests():
         print(f"[PASS] [8/10] Guardian Dashboard passed: Vitals & Pill count (Taken: {dash_data['taken']})")
         
         # 9. Personal Doctor & Driver Directory
-        doc_res = await client.post("/api/v1/directory/personal", json={
+        doc_res = await client.post("/api/v1/directory/personal", headers=cg_headers, json={
             "elder_id": elder_id,
             "category": "DOCTOR",
             "name": "Dr. R. Swaminathan (Family Diabetologist)",
@@ -128,14 +132,17 @@ async def run_e2e_tests():
         })
         assert doc_res.status_code == 200
         
-        dir_res = await client.get(f"/api/v1/directory/doctors?elder_id={elder_id}")
+        dir_res = await client.get(
+            f"/api/v1/directory/doctors?elder_id={elder_id}",
+            headers=cg_headers,
+        )
         assert dir_res.status_code == 200
         assert len(dir_res.json()) >= 1
         print("[PASS] [9/10] Personal Directory passed: Family Doctor & Driver accessible for 1-tap call")
         
         # 10. Emergency SOS Multi-Broadcast
         # Add neighbor as priority 2
-        await client.post("/api/v1/sos/contacts", json={
+        await client.post("/api/v1/sos/contacts", headers=cg_headers, json={
             "elder_id": elder_id,
             "priority": 2,
             "name": "Mr. Sharma",
@@ -143,7 +150,7 @@ async def run_e2e_tests():
             "phone_number": "+919876543211"
         })
         
-        sos_res = await client.post("/api/v1/sos/trigger", json={
+        sos_res = await client.post("/api/v1/sos/trigger", headers=elder_headers, json={
             "elder_id": elder_id,
             "latitude": 13.0827,
             "longitude": 80.2707,

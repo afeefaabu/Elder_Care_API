@@ -3,12 +3,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
-from app.core.security import require_elder
+from app.core.security import get_current_user_payload, require_elder
 from app.models.adherence import AdherenceLog
 from app.models.medication import Medication
 from app.schemas.adherence import AdherenceLogCreate, AdherenceLogResponse, AdherenceUndoRequest
 from app.services.adherence_service import adherence_broadcaster
 from app.services.daily_medication_service import ensure_daily_medication_logs
+from app.services.access_control_service import require_elder_access
 
 router = APIRouter(prefix="/adherence", tags=["Adherence & Live Feed"])
 
@@ -71,8 +72,9 @@ async def log_adherence(
     med = med_res.scalar_one_or_none()
     
     if med:
-        await adherence_broadcaster.broadcast_to_caregiver(
-            caregiver_id=med.caregiver_id,
+        await adherence_broadcaster.broadcast_to_active_caregivers(
+            db,
+            log.elder_id,
             event_type="PILL_ADHERENCE_UPDATE",
             payload={
                 "adherence_id": log.id,
@@ -150,8 +152,9 @@ async def undo_adherence(
     med_res = await db.execute(med_stmt)
     med = med_res.scalar_one_or_none()
     if med:
-        await adherence_broadcaster.broadcast_to_caregiver(
-            caregiver_id=med.caregiver_id,
+        await adherence_broadcaster.broadcast_to_active_caregivers(
+            db,
+            log.elder_id,
             event_type="PILL_ADHERENCE_UPDATE",
             payload={
                 "adherence_id": log.id,
@@ -186,7 +189,12 @@ async def undo_adherence(
     )
 
 @router.get("/timeline")
-async def get_adherence_timeline(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_adherence_timeline(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     await ensure_daily_medication_logs(db, elder_id)
     today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     stmt = (

@@ -3,14 +3,21 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
+from app.core.security import get_current_user_payload, require_caregiver
 from app.models.routine import DailyRoutine
 from app.schemas.routine import DailyRoutineCreate, DailyRoutineUpdate, DailyRoutineResponse
 from app.services.adherence_service import adherence_broadcaster
+from app.services.access_control_service import require_care_plan_management, require_elder_access
 
 router = APIRouter(prefix="/routines", tags=["24-Hour Daily Living Routine"])
 
 @router.post("", response_model=DailyRoutineResponse)
-async def create_routine(payload: DailyRoutineCreate, db: AsyncSession = Depends(get_db)):
+async def create_routine(
+    payload: DailyRoutineCreate,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_care_plan_management(db, current_user, payload.elder_id)
     routine = DailyRoutine(
         elder_id=payload.elder_id,
         time_str=payload.time_str,
@@ -30,7 +37,12 @@ async def create_routine(payload: DailyRoutineCreate, db: AsyncSession = Depends
     return routine
 
 @router.get("", response_model=List[DailyRoutineResponse])
-async def list_routines(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def list_routines(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     stmt = (
         select(DailyRoutine)
         .where(DailyRoutine.elder_id == elder_id)
@@ -40,25 +52,32 @@ async def list_routines(elder_id: int, db: AsyncSession = Depends(get_db)):
     return res.scalars().all()
 
 @router.get("/{routine_id}", response_model=DailyRoutineResponse)
-async def get_routine(routine_id: int, db: AsyncSession = Depends(get_db)):
-    stmt = select(DailyRoutine).where(DailyRoutine.id == routine_id)
-    res = await db.execute(stmt)
-    routine = res.scalar_one_or_none()
-    if not routine:
-        raise HTTPException(status_code=404, detail="Routine milestone not found")
-    return routine
-
-@router.put("/{routine_id}", response_model=DailyRoutineResponse)
-async def update_routine(
+async def get_routine(
     routine_id: int,
-    payload: DailyRoutineUpdate,
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
 ):
     stmt = select(DailyRoutine).where(DailyRoutine.id == routine_id)
     res = await db.execute(stmt)
     routine = res.scalar_one_or_none()
     if not routine:
         raise HTTPException(status_code=404, detail="Routine milestone not found")
+    await require_elder_access(db, current_user, routine.elder_id)
+    return routine
+
+@router.put("/{routine_id}", response_model=DailyRoutineResponse)
+async def update_routine(
+    routine_id: int,
+    payload: DailyRoutineUpdate,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(DailyRoutine).where(DailyRoutine.id == routine_id)
+    res = await db.execute(stmt)
+    routine = res.scalar_one_or_none()
+    if not routine:
+        raise HTTPException(status_code=404, detail="Routine milestone not found")
+    await require_care_plan_management(db, current_user, routine.elder_id)
         
     if payload.time_str is not None:
         routine.time_str = payload.time_str
@@ -83,12 +102,17 @@ async def update_routine(
     return routine
 
 @router.post("/{routine_id}/toggle", response_model=DailyRoutineResponse)
-async def toggle_routine_active(routine_id: int, db: AsyncSession = Depends(get_db)):
+async def toggle_routine_active(
+    routine_id: int,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(DailyRoutine).where(DailyRoutine.id == routine_id)
     res = await db.execute(stmt)
     routine = res.scalar_one_or_none()
     if not routine:
         raise HTTPException(status_code=404, detail="Routine milestone not found")
+    await require_care_plan_management(db, current_user, routine.elder_id)
     routine.is_active = not routine.is_active
     await db.commit()
     await db.refresh(routine)
@@ -98,12 +122,17 @@ async def toggle_routine_active(routine_id: int, db: AsyncSession = Depends(get_
     return routine
 
 @router.delete("/{routine_id}")
-async def delete_routine(routine_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_routine(
+    routine_id: int,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(DailyRoutine).where(DailyRoutine.id == routine_id)
     res = await db.execute(stmt)
     routine = res.scalar_one_or_none()
     if not routine:
         raise HTTPException(status_code=404, detail="Routine milestone not found")
+    await require_care_plan_management(db, current_user, routine.elder_id)
     elder_id = routine.elder_id
     await db.delete(routine)
     await db.commit()

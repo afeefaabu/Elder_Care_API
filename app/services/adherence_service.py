@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pairing import ElderPairing
+from app.models.user import User
 
 class AdherenceBroadcaster:
     """Manages live WebSocket connections for every paired app user."""
@@ -38,6 +39,36 @@ class AdherenceBroadcaster:
             except Exception:
                 self.disconnect(user_id, connection)
 
+    async def broadcast_to_active_caregivers(
+        self,
+        db: AsyncSession,
+        elder_id: int,
+        event_type: str,
+        payload: dict,
+    ):
+        """Send a sensitive event only to currently active care connections."""
+        result = await db.execute(
+            select(ElderPairing.caregiver_id).where(
+                ElderPairing.elder_id == elder_id,
+                ElderPairing.status == "ACTIVE",
+            )
+        )
+        for caregiver_id in set(result.scalars().all()):
+            await self.broadcast_to_user(caregiver_id, event_type, payload)
+
+    async def broadcast_to_administrators(
+        self,
+        db: AsyncSession,
+        event_type: str,
+        payload: dict,
+    ):
+        """Keep connected administrator dashboards current without exposing care data publicly."""
+        result = await db.execute(
+            select(User.id).where(User.role == "ADMIN", User.is_active == True)
+        )
+        for administrator_id in set(result.scalars().all()):
+            await self.broadcast_to_user(administrator_id, event_type, payload)
+
     async def publish_elder_update(
         self,
         db: AsyncSession,
@@ -54,10 +85,9 @@ class AdherenceBroadcaster:
             **details,
         }
         await self.broadcast_to_user(elder_id, "ELDER_DATA_UPDATED", payload)
-        result = await db.execute(
-            select(ElderPairing.caregiver_id).where(ElderPairing.elder_id == elder_id)
+        await self.broadcast_to_active_caregivers(
+            db, elder_id, "ELDER_DATA_UPDATED", payload
         )
-        for caregiver_id in set(result.scalars().all()):
-            await self.broadcast_to_user(caregiver_id, "ELDER_DATA_UPDATED", payload)
+        await self.broadcast_to_administrators(db, "ADMIN_DATA_UPDATED", payload)
 
 adherence_broadcaster = AdherenceBroadcaster()

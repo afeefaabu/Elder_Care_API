@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
+from app.core.security import get_current_user_payload, require_caregiver
 from app.models.sos import EmergencyContact, SOSEvent
 from app.models.user import User
 from app.schemas.sos import (
@@ -16,11 +17,17 @@ from app.schemas.sos import (
 )
 from app.services.telephony_service import telephony_service
 from app.services.adherence_service import adherence_broadcaster
+from app.services.access_control_service import require_care_plan_management, require_elder_access
 
 router = APIRouter(prefix="/sos", tags=["Emergency SOS Pipeline"])
 
 @router.post("/trigger", response_model=SOSTriggerResponse)
-async def trigger_emergency_sos(payload: SOSTriggerRequest, db: AsyncSession = Depends(get_db)):
+async def trigger_emergency_sos(
+    payload: SOSTriggerRequest,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, payload.elder_id)
     e_stmt = select(User).where(User.id == payload.elder_id)
     e_res = await db.execute(e_stmt)
     elder = e_res.scalar_one_or_none()
@@ -61,7 +68,10 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest, db: AsyncSession = D
             recipients.append(f"{contact.relationship_label} ({contact.email})")
         
     from app.models.pairing import ElderPairing
-    p_stmt = select(ElderPairing).where(ElderPairing.elder_id == payload.elder_id)
+    p_stmt = select(ElderPairing).where(
+        ElderPairing.elder_id == payload.elder_id,
+        ElderPairing.status == "ACTIVE",
+    )
     p_res = await db.execute(p_stmt)
     pairings = p_res.scalars().all()
     
@@ -96,16 +106,21 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest, db: AsyncSession = D
     )
 
 @router.post("/resolve")
-async def resolve_emergency_sos(payload: SOSResolveRequest, db: AsyncSession = Depends(get_db)):
+async def resolve_emergency_sos(
+    payload: SOSResolveRequest,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(SOSEvent).where(SOSEvent.id == payload.sos_id)
     res = await db.execute(stmt)
     sos = res.scalar_one_or_none()
     if not sos:
         raise HTTPException(status_code=404, detail="SOS event not found")
+    await require_elder_access(db, current_user, sos.elder_id)
         
     sos.status = "RESOLVED"
     sos.resolved_at = utc_now()
-    sos.resolved_by = payload.resolved_by
+    sos.resolved_by = current_user.get("name") or f"User {current_user.get('sub')}"
     if payload.notes:
         sos.broadcast_summary = f"{sos.broadcast_summary or ''} [Resolved Note: {payload.notes}]"
     await db.commit()
@@ -113,7 +128,12 @@ async def resolve_emergency_sos(payload: SOSResolveRequest, db: AsyncSession = D
     return {"status": "success", "message": f"SOS {payload.sos_id} marked as resolved by {payload.resolved_by}."}
 
 @router.get("/contacts", response_model=List[EmergencyContactResponse])
-async def get_emergency_contacts(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_emergency_contacts(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     stmt = (
         select(EmergencyContact)
         .where(EmergencyContact.elder_id == elder_id, EmergencyContact.is_active == True)
@@ -123,7 +143,12 @@ async def get_emergency_contacts(elder_id: int, db: AsyncSession = Depends(get_d
     return res.scalars().all()
 
 @router.post("/contacts", response_model=EmergencyContactResponse)
-async def add_emergency_contact(payload: EmergencyContactCreate, db: AsyncSession = Depends(get_db)):
+async def add_emergency_contact(
+    payload: EmergencyContactCreate,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_care_plan_management(db, current_user, payload.elder_id)
     contact = EmergencyContact(
         elder_id=payload.elder_id,
         priority=payload.priority,
@@ -145,13 +170,15 @@ async def add_emergency_contact(payload: EmergencyContactCreate, db: AsyncSessio
 async def update_emergency_contact(
     contact_id: int,
     payload: EmergencyContactUpdate,
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
 ):
     stmt = select(EmergencyContact).where(EmergencyContact.id == contact_id)
     res = await db.execute(stmt)
     contact = res.scalar_one_or_none()
     if not contact:
         raise HTTPException(status_code=404, detail="Emergency contact not found")
+    await require_care_plan_management(db, current_user, contact.elder_id)
         
     if payload.priority is not None:
         contact.priority = payload.priority
@@ -174,12 +201,17 @@ async def update_emergency_contact(
     return contact
 
 @router.delete("/contacts/{contact_id}")
-async def delete_emergency_contact(contact_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_emergency_contact(
+    contact_id: int,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(EmergencyContact).where(EmergencyContact.id == contact_id)
     res = await db.execute(stmt)
     contact = res.scalar_one_or_none()
     if not contact:
         raise HTTPException(status_code=404, detail="Emergency contact not found")
+    await require_care_plan_management(db, current_user, contact.elder_id)
         
     elder_id = contact.elder_id
     await db.delete(contact)
@@ -190,7 +222,12 @@ async def delete_emergency_contact(contact_id: int, db: AsyncSession = Depends(g
     return {"status": "success", "message": f"Emergency contact {contact_id} deleted successfully."}
 
 @router.get("/history", response_model=List[SOSEventResponse])
-async def list_sos_history(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def list_sos_history(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     stmt = (
         select(SOSEvent)
         .where(SOSEvent.elder_id == elder_id)

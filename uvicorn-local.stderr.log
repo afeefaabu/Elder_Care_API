@@ -1,0 +1,6 @@
+INFO:     Started server process [45420]
+INFO:     Waiting for application startup.
+2026-10-15 22:26:06,055 - eldercare-api - INFO - Starting Elder Care Backend...
+2026-10-15 22:26:06,424 - watchdog - INFO - 25-Minute Medication Escalation Watchdog started.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)

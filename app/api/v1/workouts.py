@@ -1,12 +1,12 @@
 import os
-import shutil
+import secrets
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
-from app.core.security import require_elder
+from app.core.security import get_current_user_payload, require_caregiver, require_elder
 from app.models.workout import SeniorWorkout
 from app.models.routine import DailyRoutine
 from app.models.vitals import VitalsLog
@@ -19,12 +19,32 @@ from app.schemas.workout import (
     WorkoutLibraryItem
 )
 from app.services.adherence_service import adherence_broadcaster
+from app.services.access_control_service import require_care_plan_management, require_elder_access
 
 router = APIRouter(prefix='/workouts', tags=['Senior Workouts & Guided Videos'])
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 WORKOUT_UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads', 'workouts')
 os.makedirs(WORKOUT_UPLOAD_DIR, exist_ok=True)
+MAX_WORKOUT_VIDEO_BYTES = 100 * 1024 * 1024
+
+
+async def _save_workout_video(file: UploadFile, destination: str) -> None:
+    """Save a bounded video stream and remove incomplete files after failure."""
+    written = 0
+    try:
+        with open(destination, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_WORKOUT_VIDEO_BYTES:
+                    raise HTTPException(status_code=413, detail="Workout videos must be 100 MB or smaller.")
+                buffer.write(chunk)
+    except Exception:
+        if os.path.exists(destination):
+            os.remove(destination)
+        raise
+    finally:
+        await file.close()
 
 DOCTOR_APPROVED_LIBRARY: List[WorkoutLibraryItem] = [
     WorkoutLibraryItem(
@@ -67,7 +87,10 @@ async def get_workout_library():
     return DOCTOR_APPROVED_LIBRARY
 
 @router.post('/upload-video')
-async def upload_workout_video(file: UploadFile = File(...)):
+async def upload_workout_video(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_caregiver),
+):
     ext = os.path.splitext(file.filename)[1].lower()
     allowed = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v']
     if ext not in allowed:
@@ -76,11 +99,9 @@ async def upload_workout_video(file: UploadFile = File(...)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'Unsupported video format. Allowed formats: {allowed_str}'
         )
-    timestamp = utc_now().strftime('%Y%m%d%H%M%S')
-    filename = f'workout_{timestamp}_{file.filename}'
+    filename = f'workout_{secrets.token_hex(16)}{ext}'
     filepath = os.path.join(WORKOUT_UPLOAD_DIR, filename)
-    with open(filepath, 'wb') as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    await _save_workout_video(file, filepath)
     return {
         'status': 'success',
         'video_url': f'/uploads/workouts/{filename}',
@@ -88,7 +109,12 @@ async def upload_workout_video(file: UploadFile = File(...)):
     }
 
 @router.get('', response_model=List[WorkoutResponse])
-async def get_workouts(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_workouts(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     stmt = (
         select(SeniorWorkout)
         .where(SeniorWorkout.elder_id == elder_id)
@@ -98,7 +124,12 @@ async def get_workouts(elder_id: int, db: AsyncSession = Depends(get_db)):
     return res.scalars().all()
 
 @router.post('', response_model=WorkoutResponse)
-async def create_workout(payload: WorkoutCreate, db: AsyncSession = Depends(get_db)):
+async def create_workout(
+    payload: WorkoutCreate,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_care_plan_management(db, current_user, payload.elder_id)
     workout = SeniorWorkout(
         elder_id=payload.elder_id,
         title=payload.title.strip(),
@@ -144,12 +175,18 @@ async def create_workout(payload: WorkoutCreate, db: AsyncSession = Depends(get_
     return workout
 
 @router.put('/{workout_id}', response_model=WorkoutResponse)
-async def update_workout(workout_id: int, payload: WorkoutUpdate, db: AsyncSession = Depends(get_db)):
+async def update_workout(
+    workout_id: int,
+    payload: WorkoutUpdate,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(SeniorWorkout).where(SeniorWorkout.id == workout_id)
     res = await db.execute(stmt)
     workout = res.scalar_one_or_none()
     if not workout:
         raise HTTPException(status_code=404, detail='Workout not found')
+    await require_care_plan_management(db, current_user, workout.elder_id)
 
     if payload.title is not None:
         workout.title = payload.title.strip()
@@ -178,12 +215,17 @@ async def update_workout(workout_id: int, payload: WorkoutUpdate, db: AsyncSessi
     return workout
 
 @router.delete('/{workout_id}')
-async def delete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_workout(
+    workout_id: int,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(SeniorWorkout).where(SeniorWorkout.id == workout_id)
     res = await db.execute(stmt)
     workout = res.scalar_one_or_none()
     if not workout:
         raise HTTPException(status_code=404, detail='Workout not found')
+    await require_care_plan_management(db, current_user, workout.elder_id)
 
     elder_id = workout.elder_id
     await db.delete(workout)
@@ -194,12 +236,17 @@ async def delete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
     return {'status': 'success', 'message': f'Workout {workout_id} deleted.'}
 
 @router.post('/{workout_id}/toggle', response_model=WorkoutResponse)
-async def toggle_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
+async def toggle_workout(
+    workout_id: int,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(SeniorWorkout).where(SeniorWorkout.id == workout_id)
     res = await db.execute(stmt)
     workout = res.scalar_one_or_none()
     if not workout:
         raise HTTPException(status_code=404, detail='Workout not found')
+    await require_care_plan_management(db, current_user, workout.elder_id)
 
     workout.is_active = not workout.is_active
     await db.commit()
@@ -210,12 +257,17 @@ async def toggle_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
     return workout
 
 @router.post('/{workout_id}/complete')
-async def complete_workout(workout_id: int, db: AsyncSession = Depends(get_db)):
+async def complete_workout(
+    workout_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(SeniorWorkout).where(SeniorWorkout.id == workout_id)
     res = await db.execute(stmt)
     workout = res.scalar_one_or_none()
     if not workout:
         raise HTTPException(status_code=404, detail='Workout not found')
+    await require_elder_access(db, current_user, workout.elder_id)
 
     now = utc_now()
     workout.last_completed_at = now

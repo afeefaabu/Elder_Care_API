@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
+from app.core.security import get_current_user_payload, require_caregiver
 from app.models.directory import ServiceDirectory, AppointmentRequest
 from app.models.user import User
 from app.schemas.directory import (
@@ -17,11 +18,17 @@ from app.schemas.directory import (
 )
 from app.services.telephony_service import telephony_service
 from app.services.adherence_service import adherence_broadcaster
+from app.services.access_control_service import require_care_plan_management, require_elder_access
 
 router = APIRouter(prefix="/directory", tags=["Personal & City Service Directory"])
 
 @router.post("/personal", response_model=ServiceDirectoryResponse)
-async def add_personal_contact(payload: ServiceDirectoryCreate, db: AsyncSession = Depends(get_db)):
+async def add_personal_contact(
+    payload: ServiceDirectoryCreate,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_care_plan_management(db, current_user, payload.elder_id)
     entry = ServiceDirectory(
         elder_id=payload.elder_id,
         scope="PERSONAL",
@@ -43,7 +50,12 @@ async def add_personal_contact(payload: ServiceDirectoryCreate, db: AsyncSession
     return entry
 
 @router.get("/doctors", response_model=List[ServiceDirectoryResponse])
-async def get_doctors(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_doctors(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     stmt = (
         select(ServiceDirectory)
         .where(
@@ -56,7 +68,12 @@ async def get_doctors(elder_id: int, db: AsyncSession = Depends(get_db)):
     return res.scalars().all()
 
 @router.get("/taxis", response_model=List[ServiceDirectoryResponse])
-async def get_taxis(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_taxis(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     stmt = (
         select(ServiceDirectory)
         .where(
@@ -68,26 +85,19 @@ async def get_taxis(elder_id: int, db: AsyncSession = Depends(get_db)):
     res = await db.execute(stmt)
     return res.scalars().all()
 
-@router.get("/{entry_id}", response_model=ServiceDirectoryResponse)
-async def get_directory_entry(entry_id: int, db: AsyncSession = Depends(get_db)):
-    stmt = select(ServiceDirectory).where(ServiceDirectory.id == entry_id)
-    res = await db.execute(stmt)
-    entry = res.scalar_one_or_none()
-    if not entry:
-        raise HTTPException(status_code=404, detail="Directory entry not found")
-    return entry
-
 @router.put("/{entry_id}", response_model=ServiceDirectoryResponse)
 async def update_directory_entry(
     entry_id: int,
     payload: ServiceDirectoryUpdate,
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
 ):
     stmt = select(ServiceDirectory).where(ServiceDirectory.id == entry_id)
     res = await db.execute(stmt)
     entry = res.scalar_one_or_none()
     if not entry:
         raise HTTPException(status_code=404, detail="Directory entry not found")
+    await require_care_plan_management(db, current_user, entry.elder_id)
         
     if payload.category is not None:
         entry.category = payload.category.upper()
@@ -110,12 +120,17 @@ async def update_directory_entry(
     return entry
 
 @router.delete("/{entry_id}")
-async def delete_directory_entry(entry_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_directory_entry(
+    entry_id: int,
+    current_user: dict = Depends(require_caregiver),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(ServiceDirectory).where(ServiceDirectory.id == entry_id)
     res = await db.execute(stmt)
     entry = res.scalar_one_or_none()
     if not entry:
         raise HTTPException(status_code=404, detail="Directory entry not found")
+    await require_care_plan_management(db, current_user, entry.elder_id)
     elder_id = entry.elder_id
     await db.delete(entry)
     await db.commit()
@@ -125,12 +140,19 @@ async def delete_directory_entry(entry_id: int, db: AsyncSession = Depends(get_d
     return {"status": "success", "message": f"Directory entry {entry_id} deleted successfully."}
 
 @router.post("/request-appointment", response_model=AppointmentResponse)
-async def request_appointment(payload: AppointmentCreate, db: AsyncSession = Depends(get_db)):
+async def request_appointment(
+    payload: AppointmentCreate,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, payload.elder_id)
     dir_stmt = select(ServiceDirectory).where(ServiceDirectory.id == payload.directory_id)
     d_res = await db.execute(dir_stmt)
     doc = d_res.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Doctor not found")
+    if doc.elder_id != payload.elder_id:
+        raise HTTPException(status_code=400, detail="Doctor does not belong to this senior.")
         
     # Get elder name
     e_stmt = select(User).where(User.id == payload.elder_id)
@@ -175,7 +197,12 @@ async def request_appointment(payload: AppointmentCreate, db: AsyncSession = Dep
     )
 
 @router.get("/appointments", response_model=List[AppointmentResponse])
-async def list_appointments(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def list_appointments(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     stmt = (
         select(AppointmentRequest, ServiceDirectory.name.label("doctor_name"))
         .join(ServiceDirectory, AppointmentRequest.directory_id == ServiceDirectory.id)
@@ -198,12 +225,19 @@ async def list_appointments(elder_id: int, db: AsyncSession = Depends(get_db)):
     return results
 
 @router.post("/book-taxi", response_model=TaxiBookingResponse)
-async def book_taxi(payload: TaxiBookingRequest, db: AsyncSession = Depends(get_db)):
+async def book_taxi(
+    payload: TaxiBookingRequest,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, payload.elder_id)
     dir_stmt = select(ServiceDirectory).where(ServiceDirectory.id == payload.taxi_directory_id)
     d_res = await db.execute(dir_stmt)
     driver = d_res.scalar_one_or_none()
     if not driver:
         raise HTTPException(status_code=404, detail="Taxi/Driver not found")
+    if driver.elder_id != payload.elder_id:
+        raise HTTPException(status_code=400, detail="Taxi contact does not belong to this senior.")
         
     e_stmt = select(User).where(User.id == payload.elder_id)
     e_res = await db.execute(e_stmt)
@@ -228,3 +262,18 @@ async def book_taxi(payload: TaxiBookingRequest, db: AsyncSession = Depends(get_
         destination_address=payload.destination_address,
         dispatched_at=utc_now()
     )
+
+
+@router.get("/{entry_id}", response_model=ServiceDirectoryResponse)
+async def get_directory_entry(
+    entry_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(ServiceDirectory).where(ServiceDirectory.id == entry_id)
+    res = await db.execute(stmt)
+    entry = res.scalar_one_or_none()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Directory entry not found")
+    await require_elder_access(db, current_user, entry.elder_id)
+    return entry

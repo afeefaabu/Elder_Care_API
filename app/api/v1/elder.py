@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
-from app.core.security import create_access_token, require_elder
+from app.core.security import create_access_token, get_current_user_payload, require_elder
+from app.services.access_control_service import require_elder_access
 from app.models.user import User, HealthProfile
 from app.models.pairing import ElderPairing
 from app.models.routine import DailyRoutine
@@ -35,24 +36,42 @@ class VoiceCommandConfirmRequest(BaseModel):
     scheduled_slot: Optional[str] = Field(default=None, max_length=20)
     language: str = Field(default="en", min_length=2, max_length=10)
 
+@router.get("/session")
+async def get_elder_session(current_user: dict = Depends(require_elder)):
+    """Validate a restored elder-device token without exposing pairing codes."""
+    return {
+        "elder_id": int(current_user["sub"]),
+        "full_name": current_user.get("name") or "Senior Citizen",
+    }
+
+
 @router.post("/pair-device")
 async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depends(get_db)):
-    # 15-second code pairing
+    # Use portable SQL for every supported database dialect.
     stmt = select(ElderPairing).where(
-        ElderPairing.pair_code == payload.pair_code.strip(),
-        ElderPairing.status.in_(["PENDING", "ACTIVE"])
+        ElderPairing.pair_code == payload.pair_code.strip()
     )
     result = await db.execute(stmt)
     pairing = result.scalar_one_or_none()
-    
+
     if not pairing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invalid 6-digit code. Please check with your family member."
+            detail="This pairing code was not found. Ask your caregiver to generate a new code.",
         )
-    
-    pairing.status = "ACTIVE"
-    pairing.device_fingerprint = payload.device_fingerprint
+
+    if pairing.status not in {"PENDING", "ACTIVE"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This family access code is no longer available. Ask your caregiver to restore the senior connection.",
+        )
+
+    # A family's original code can enroll more than one trusted senior device.
+    # The first successful enrollment marks the relationship active; later
+    # enrollments receive their own access token without altering the code.
+    if pairing.status == "PENDING":
+        pairing.status = "ACTIVE"
+        pairing.device_fingerprint = payload.device_fingerprint
     
     # Fetch elder
     elder_stmt = select(User).where(User.id == pairing.elder_id)
@@ -63,7 +82,7 @@ async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depen
         elder.fcm_token = payload.fcm_token
     if payload.preferred_language:
         elder.preferred_language = payload.preferred_language
-        
+
     await db.commit()
     
     # Generate token for Elder client
@@ -84,7 +103,12 @@ async def pair_elder_device(payload: PairDeviceRequest, db: AsyncSession = Depen
     }
 
 @router.get("/{elder_id}/today-schedule")
-async def get_today_schedule(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_today_schedule(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     now = utc_now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -161,7 +185,13 @@ async def get_today_schedule(elder_id: int, db: AsyncSession = Depends(get_db)):
     }
 
 @router.post("/{elder_id}/routine/{routine_id}/complete")
-async def complete_routine(elder_id: int, routine_id: int, db: AsyncSession = Depends(get_db)):
+async def complete_routine(
+    elder_id: int,
+    routine_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     r_stmt = select(DailyRoutine).where(DailyRoutine.id == routine_id, DailyRoutine.elder_id == elder_id)
     r_res = await db.execute(r_stmt)
     routine = r_res.scalar_one_or_none()
@@ -538,7 +568,7 @@ async def confirm_voice_command(
         else:
             log.status, log.actual_time, log.notes = "TAKEN", now, "Confirmed through Gemini voice assistant"
         await db.commit()
-        await adherence_broadcaster.broadcast_to_caregiver(caregiver_id=medication.caregiver_id, event_type="PILL_ADHERENCE_UPDATE", payload={"elder_id": elder_id, "medication_name": medication.name, "scheduled_slot": slot, "status": "TAKEN", "message": f"Dose confirmed: {medication.name} ({slot}) was marked taken by the senior."})
+        await adherence_broadcaster.broadcast_to_active_caregivers(db, elder_id, "PILL_ADHERENCE_UPDATE", {"elder_id": elder_id, "medication_name": medication.name, "scheduled_slot": slot, "status": "TAKEN", "message": f"Dose confirmed: {medication.name} ({slot}) was marked taken by the senior."})
         await adherence_broadcaster.publish_elder_update(db, elder_id, "ADHERENCE", "UPDATED")
         reply = _voice_text(language, f"{medication.name} is marked as taken. Your caregiver can see the update.", f"{medication.name} എടുത്തതായി രേഖപ്പെടുത്തി. പരിചരിക്കുന്നയാൾക്ക് ഈ വിവരം കാണാം.")
         return {"status": "success", "spoken_response": reply, "requires_confirmation": False}
@@ -547,7 +577,7 @@ async def confirm_voice_command(
         routine = await _incomplete_routine(db, elder_id)
         if not routine or routine.id != payload.target_id:
             raise HTTPException(status_code=409, detail="That routine is no longer waiting for confirmation. Please ask again.")
-        await complete_routine(elder_id, routine.id, db)
+        await complete_routine(elder_id, routine.id, current_user, db)
         reply = _voice_text(language, f"{routine.title} is marked as completed.", f"{routine.title} പൂർത്തിയായതായി രേഖപ്പെടുത്തി.")
         return {"status": "success", "spoken_response": reply, "requires_confirmation": False}
 

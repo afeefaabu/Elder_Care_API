@@ -8,6 +8,13 @@ def utc_now() -> datetime:
     """Returns naive UTC datetime, fully compatible with both SQLite and PostgreSQL asyncpg."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
+
+def as_naive_utc(value: datetime) -> datetime:
+    """Normalize legacy timezone-aware database values for safe UTC comparison."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
 connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
 
 engine = create_async_engine(

@@ -1,5 +1,9 @@
 from typing import List
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Elder Care Production API"
@@ -43,8 +47,14 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "ElderCare"
     
     # CORS
-    CORS_ORIGINS: List[str] = ["*"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:55795",
+        "http://127.0.0.1:55795",
+    ]
     
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Resolve .env from the backend directory, not the terminal's current
+    # working directory. This keeps startup seeding reliable in VS Code,
+    # Docker and service launches.
+    model_config = SettingsConfigDict(env_file=BACKEND_ROOT / ".env", extra="ignore")
 
 settings = Settings()

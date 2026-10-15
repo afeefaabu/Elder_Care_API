@@ -3,9 +3,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, utc_now
+from app.core.security import get_current_user_payload
 from app.models.vitals import VitalsLog
 from app.schemas.vitals import VitalsLogCreate, VitalsLogResponse, VitalsSummaryResponse
 from app.services.adherence_service import adherence_broadcaster
+from app.services.access_control_service import require_elder_access
 
 router = APIRouter(prefix="/vitals", tags=["Health Vitals & Trends"])
 
@@ -50,7 +52,12 @@ def classify_vital(vital_type: str, primary: float, secondary: Optional[float], 
     return "NORMAL"
 
 @router.post("", response_model=VitalsLogResponse)
-async def log_vital(payload: VitalsLogCreate, db: AsyncSession = Depends(get_db)):
+async def log_vital(
+    payload: VitalsLogCreate,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, payload.elder_id)
     classification = classify_vital(
         payload.vital_type,
         payload.value_primary,
@@ -82,8 +89,10 @@ async def log_vital(payload: VitalsLogCreate, db: AsyncSession = Depends(get_db)
 async def list_vitals(
     elder_id: int,
     vital_type: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
 ):
+    await require_elder_access(db, current_user, elder_id)
     stmt = select(VitalsLog).where(VitalsLog.elder_id == elder_id)
     if vital_type:
         stmt = stmt.where(VitalsLog.vital_type == vital_type.upper())
@@ -92,7 +101,12 @@ async def list_vitals(
     return res.scalars().all()
 
 @router.get("/summary/{elder_id}", response_model=VitalsSummaryResponse)
-async def get_vitals_summary(elder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_vitals_summary(
+    elder_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_elder_access(db, current_user, elder_id)
     # Latest Blood Sugar
     sugar_stmt = (
         select(VitalsLog)
@@ -127,12 +141,17 @@ async def get_vitals_summary(elder_id: int, db: AsyncSession = Depends(get_db)):
     )
 
 @router.delete("/{vital_id}")
-async def delete_vital(vital_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_vital(
+    vital_id: int,
+    current_user: dict = Depends(get_current_user_payload),
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(VitalsLog).where(VitalsLog.id == vital_id)
     res = await db.execute(stmt)
     vital = res.scalar_one_or_none()
     if not vital:
         raise HTTPException(status_code=404, detail="Vitals record not found")
+    await require_elder_access(db, current_user, vital.elder_id)
     elder_id = vital.elder_id
     await db.delete(vital)
     await db.commit()
