@@ -4,6 +4,9 @@ from typing import Optional, Any, Dict
 from jose import jwt, JWTError
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.database import get_db
+from app.models.user import User
 from app.core.config import settings
 
 security = HTTPBearer(auto_error=False)
@@ -39,7 +42,10 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
     except JWTError:
         return None
 
-async def get_current_user_payload(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
+async def get_current_user_payload(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -53,6 +59,23 @@ async def get_current_user_payload(credentials: Optional[HTTPAuthorizationCreden
             detail="Invalid or expired token. Please log in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user = await db.get(User, int(user_id))
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account is unavailable. Please sign in again or contact an administrator.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # Always use the current role from storage, so a role change takes effect
+    # immediately instead of waiting for an old token to expire.
+    payload["role"] = user.role
     return payload
 
 def require_roles(*allowed_roles: str):

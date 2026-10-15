@@ -11,6 +11,7 @@ from app.api.v1.welfare import router as welfare_router
 from app.api.v1.websocket import router as ws_router
 from app.api.v1.vitals import router as vitals_router
 from app.api.v1.workouts import router as workouts_router
+from app.api.v1.admin import router as admin_router
 
 api_router = APIRouter()
 
@@ -26,3 +27,4 @@ api_router.include_router(welfare_router)
 api_router.include_router(ws_router)
 api_router.include_router(vitals_router)
 api_router.include_router(workouts_router)
+api_router.include_router(admin_router)

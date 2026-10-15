@@ -62,6 +62,7 @@ class UserLoginRequest(BaseModel):
     otp_code: Optional[str] = Field(None)
     password: Optional[str] = Field(None)
 
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
